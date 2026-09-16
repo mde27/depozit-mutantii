@@ -7,11 +7,12 @@ export default function ClientRequest() {
   const [stock, setStock] = useState([]);
   const [selectedItems, setSelectedItems] = useState({});
   const [loading, setLoading] = useState(false);
-  const [step, setStep] = useState(1); // 1 = products, 2 = details
+  const [step, setStep] = useState(1);
+  const [placeFilter, setPlaceFilter] = useState('all');
+  const [preview, setPreview] = useState(null);
 
   const role = localStorage.getItem('role') || '';
 
-  // Form fields
   const [form, setForm] = useState({
     pm_bt: '',
     pm_bt_phone: '',
@@ -46,33 +47,32 @@ export default function ClientRequest() {
   }, [navigate]);
 
   const fetchStock = async () => {
-  setLoading(true);
-  try {
-    const res = await fetch(`${API_URL}?action=getStock`);
-    const text = await res.text();          // first get as text
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_URL}?action=getStock`);
+      const text = await res.text();
 
-    // Check if it looks like JSON
-    if (!text.trim().startsWith('{')) {
-      console.error('Received non-JSON:', text.slice(0, 200));
-      alert('Temporary connection problem with the server. Please try again in a few seconds.');
-      setLoading(false);
-      return;
-    }
-
-    const data = JSON.parse(text);
-    if (data.status === 'success') {
-      let items = data.stock;
-      if (role === 'a') {
-        items = items.filter((item) => item.forA === true);
+      if (!text.trim().startsWith('{')) {
+        console.error('Received non-JSON:', text.slice(0, 200));
+        alert('Temporary connection problem with the server. Please try again in a few seconds.');
+        setLoading(false);
+        return;
       }
-      setStock(items);
+
+      const data = JSON.parse(text);
+      if (data.status === 'success') {
+        let items = data.stock || [];
+        if (role === 'a') {
+          items = items.filter((item) => item.forA === true);
+        }
+        setStock(items);
+      }
+    } catch (e) {
+      console.error(e);
+      alert('Connection error. Please try again.');
     }
-  } catch (e) {
-    console.error(e);
-    alert('Connection error. Please try again.');
-  }
-  setLoading(false);
-};;
+    setLoading(false);
+  };
 
   const updateForm = (field, value) => {
     setForm((prev) => ({ ...prev, [field]: value }));
@@ -92,15 +92,18 @@ export default function ClientRequest() {
 
     const itemsToOrder = Object.keys(selectedItems)
       .filter((id) => selectedItems[id] > 0)
-      .map((id) => ({
-        id,
-        name: stock.find((s) => s.id == id)?.name,
-        orderedQty: selectedItems[id],
-      }));
+      .map((id) => {
+        const found = stock.find((s) => String(s.id) === String(id));
+        return {
+          id,
+          code: found?.code || '',
+          name: found?.name,
+          orderedQty: selectedItems[id],
+        };
+      });
 
     if (itemsToOrder.length === 0) return alert('Select at least one item.');
 
-    // Basic validation
     const required = [
       'pm_bt', 'pm_bt_phone',
       'address_ridicare', 'localitate_ridicare', 'judet_ridicare', 'nr_telefon_ridicare', 'pickup_date',
@@ -129,9 +132,11 @@ export default function ClientRequest() {
         body: JSON.stringify({
           action: 'createTicket',
           data: {
-            clientName: form.pm_bt,           // used as client name
+            clientName: form.pm_bt,
             items: itemsToOrder,
-            info: form                       // full detailed info
+            info: form,
+            username: localStorage.getItem('username') || '',
+            role: localStorage.getItem('role') || '',
           },
         }),
       });
@@ -139,11 +144,13 @@ export default function ClientRequest() {
       const data = await res.json();
 
       if (data.status === 'success') {
-        alert('Ticket created and email sent successfully!');
+        alert(
+          'Ticket created: ' + data.ticketId +
+          '\nEmail: ' + (data.emailStatus || 'unknown')
+        );
         if (role === 'admin') {
           navigate('/dashboard');
         } else {
-          // reset for next order
           setSelectedItems({});
           setForm({
             pm_bt: '', pm_bt_phone: '',
@@ -178,10 +185,14 @@ export default function ClientRequest() {
     navigate('/login');
   };
 
+  const places = [...new Set(stock.map((s) => s.place).filter(Boolean))];
+  const visibleStock = placeFilter === 'all'
+    ? stock
+    : stock.filter((item) => item.place === placeFilter);
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-rose-50 via-white to-rose-50">
       <div className="max-w-3xl mx-auto px-4 sm:px-6 py-8">
-        {/* Header */}
         <div className="flex justify-between items-center mb-6">
           {role === 'admin' ? (
             <button
@@ -229,24 +240,78 @@ export default function ClientRequest() {
               </div>
             </div>
           ) : step === 1 ? (
-            /* ========== STEP 1: Products ========== */
             <>
               <div className="mb-7">
                 <label className="block text-sm font-semibold text-rose-900/80 mb-3">Select Items</label>
+
+                <div className="flex flex-wrap gap-2 mb-4">
+                  <button
+                    type="button"
+                    onClick={() => setPlaceFilter('all')}
+                    className={`px-3 py-1.5 rounded-lg text-sm font-medium border ${
+                      placeFilter === 'all'
+                        ? 'bg-rose-600 text-white border-rose-600'
+                        : 'bg-white text-rose-700 border-rose-200'
+                    }`}
+                  >
+                    All
+                  </button>
+                  {places.map((p) => (
+                    <button
+                      type="button"
+                      key={p}
+                      onClick={() => setPlaceFilter(p)}
+                      className={`px-3 py-1.5 rounded-lg text-sm font-medium border ${
+                        placeFilter === p
+                          ? 'bg-rose-600 text-white border-rose-600'
+                          : 'bg-white text-rose-700 border-rose-200'
+                      }`}
+                    >
+                      {p}
+                    </button>
+                  ))}
+                </div>
+
                 <div className="space-y-2.5 max-h-96 overflow-y-auto pr-1">
-                  {stock.length === 0 ? (
-                    <p className="text-center text-gray-400 py-8">No stock items available for your role.</p>
+                  {visibleStock.length === 0 ? (
+                    <p className="text-center text-gray-400 py-8">No stock items available.</p>
                   ) : (
-                    stock.map((item) => (
+                    visibleStock.map((item) => (
                       <div
-                        key={`${item.id}-${item.name}`}
-                        className="flex justify-between items-center p-3.5 rounded-xl border border-rose-100 bg-rose-50/30 hover:bg-rose-50/60 hover:border-rose-200 transition"
+                        key={item.id || `${item.code}-${item.name}`}
+                        className="flex justify-between items-start gap-3 p-3.5 rounded-xl border border-rose-100 bg-rose-50/30 hover:bg-rose-50/60 hover:border-rose-200 transition"
                       >
-                        <div className="min-w-0 pr-3">
-                          <p className="font-medium text-gray-800 truncate">{item.name}</p>
-                          <p className="text-xs text-rose-500/80 mt-0.5">
-                            Available: <span className="font-semibold">{item.quantity}</span>
-                          </p>
+                        <div className="flex items-start gap-3 min-w-0 pr-3">
+                          {item.image ? (
+                            <button
+                              type="button"
+                              onClick={() => setPreview(item)}
+                              className="shrink-0"
+                            >
+                              <img
+                                src={item.image}
+                                alt={item.name}
+                                referrerPolicy="no-referrer"
+                                className="w-14 h-14 object-cover rounded-lg border border-rose-100 bg-white"
+                              />
+                            </button>
+                          ) : (
+                            <div className="w-14 h-14 rounded-lg bg-rose-100 text-rose-300 flex items-center justify-center text-lg shrink-0">
+                              📦
+                            </div>
+                          )}
+                          <div className="min-w-0">
+                            <p className="font-medium text-gray-800">{item.name}</p>
+                            <p className="text-xs text-rose-500/80 mt-0.5">
+                              {item.code} · {item.place || '—'} · {item.company || ''}
+                              {' · '}Available: <span className="font-semibold">{item.quantity}</span>
+                            </p>
+                            {item.comments ? (
+                              <p className="text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1 mt-1.5">
+                                {item.comments}
+                              </p>
+                            ) : null}
+                          </div>
                         </div>
                         <input
                           type="number"
@@ -276,9 +341,7 @@ export default function ClientRequest() {
               </button>
             </>
           ) : (
-            /* ========== STEP 2: Full Form ========== */
             <form onSubmit={handleSubmit} className="space-y-6">
-              {/* 1. Informații */}
               <div className="bg-rose-50/50 border border-rose-100 rounded-xl p-5">
                 <h3 className="text-lg font-bold text-rose-800 mb-4">👤 Informații</h3>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -303,7 +366,6 @@ export default function ClientRequest() {
                 </div>
               </div>
 
-              {/* 2. Încarcare */}
               <div className="bg-rose-50/50 border border-rose-100 rounded-xl p-5">
                 <h3 className="text-lg font-bold text-rose-800 mb-4">📦 Încarcare (Ridicare)</h3>
                 <div className="space-y-4">
@@ -369,7 +431,6 @@ export default function ClientRequest() {
                 </div>
               </div>
 
-              {/* 3. Descărcare */}
               <div className="bg-rose-50/50 border border-rose-100 rounded-xl p-5">
                 <h3 className="text-lg font-bold text-rose-800 mb-4">🚚 Descărcare (Livrare)</h3>
                 <div className="space-y-4">
@@ -435,7 +496,6 @@ export default function ClientRequest() {
                 </div>
               </div>
 
-              {/* 4. Retur */}
               <div className="bg-rose-50/50 border border-rose-100 rounded-xl p-5">
                 <h3 className="text-lg font-bold text-rose-800 mb-4">🔄 Retur</h3>
                 <label className="flex items-center gap-3 cursor-pointer mb-4">
@@ -504,7 +564,6 @@ export default function ClientRequest() {
                 )}
               </div>
 
-              {/* Comments + Email */}
               <div className="bg-rose-50/50 border border-rose-100 rounded-xl p-5">
                 <h3 className="text-lg font-bold text-rose-800 mb-4">📝 Comentarii & Email</h3>
                 <div className="space-y-4">
@@ -550,6 +609,20 @@ export default function ClientRequest() {
           )}
         </div>
       </div>
+
+      {preview && (
+        <div
+          className="fixed inset-0 z-[80] bg-black/50 flex items-center justify-center p-4"
+          onClick={() => setPreview(null)}
+        >
+          <img
+            src={preview.image}
+            alt={preview.name}
+            referrerPolicy="no-referrer"
+            className="max-w-[90vw] max-h-[80vh] object-contain rounded-2xl shadow-2xl bg-white"
+          />
+        </div>
+      )}
     </div>
   );
 }

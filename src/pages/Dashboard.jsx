@@ -5,24 +5,24 @@ export default function Dashboard() {
   const navigate = useNavigate();
 
   useEffect(() => {
-  if (!localStorage.getItem('isAuthenticated')) {
-    navigate('/login');
-    return;
-  }
-  // Only admin can access these pages
-  if (localStorage.getItem('role') !== 'admin') {
-    navigate('/client');
-    return;
-  }
-  // ... rest of the existing code (fetchTickets / fetchStock etc.)
-}, [navigate]);
+    if (!localStorage.getItem('isAuthenticated')) {
+      navigate('/login');
+      return;
+    }
+    // Only admin can access these pages
+    if (localStorage.getItem('role') !== 'admin') {
+      navigate('/client');
+      return;
+    }
+    // ... rest of the existing code (fetchTickets / fetchStock etc.)
+  }, [navigate]);
 
   const handleLogout = () => {
-  localStorage.removeItem('isAuthenticated');
-  localStorage.removeItem('role');
-  localStorage.removeItem('username');
-  navigate('/login');
-};
+    localStorage.removeItem('isAuthenticated');
+    localStorage.removeItem('role');
+    localStorage.removeItem('username');
+    navigate('/login');
+  };
 
   const cards = [
     {
@@ -46,6 +46,13 @@ export default function Dashboard() {
       description: 'View current inventory levels and item details.',
       accent: 'from-pink-500 to-rose-500',
     },
+    {
+      path: '/logs',
+      emoji: '📜',
+      title: 'Activity Log',
+      description: 'See who created tickets and what items were ordered.',
+      accent: 'from-rose-500 to-pink-400',
+    }
   ];
 
   return (
@@ -73,7 +80,7 @@ export default function Dashboard() {
         </div>
 
         {/* Navigation Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
           {cards.map((card) => (
             <button
               key={card.path}

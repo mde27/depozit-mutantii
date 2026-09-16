@@ -5,6 +5,7 @@ import Dashboard from './pages/Dashboard';
 import ClientRequest from './pages/ClientRequest';
 import Warehouse from './pages/Warehouse';
 import Stock from './pages/Stock';
+import Logs from './pages/Logs';
 
 export default function App() {
   return (
@@ -16,6 +17,7 @@ export default function App() {
         <Route path="/client" element={<ClientRequest />} />
         <Route path="/warehouse" element={<Warehouse />} />
         <Route path="/stock" element={<Stock />} />
+        <Route path="/logs" element={<Logs />} />
       </Routes>
     </BrowserRouter>
   );

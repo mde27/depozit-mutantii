@@ -8,7 +8,14 @@ export default function Warehouse() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!localStorage.getItem('isAuthenticated')) navigate('/login');
+    if (!localStorage.getItem('isAuthenticated')) {
+      navigate('/login');
+      return;
+    }
+    if (localStorage.getItem('role') !== 'admin') {
+      navigate('/client');
+      return;
+    }
     fetchTickets();
   }, [navigate]);
 
@@ -17,7 +24,7 @@ export default function Warehouse() {
     try {
       const res = await fetch(`${API_URL}?action=getTickets`);
       const data = await res.json();
-      if (data.status === 'success') setTickets(data.tickets);
+      if (data.status === 'success') setTickets(data.tickets || []);
     } catch (e) {
       console.error(e);
     }
@@ -52,20 +59,10 @@ export default function Warehouse() {
         </div>
 
         {loading ? (
-          <div className="flex items-center justify-center py-20">
-            <div className="flex flex-col items-center gap-3">
-              <svg className="animate-spin h-8 w-8 text-rose-500" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-              </svg>
-              <p className="text-rose-600 font-medium">Loading tickets...</p>
-            </div>
-          </div>
+          <p className="text-center text-rose-600 py-20">Loading tickets...</p>
         ) : activeTickets.length === 0 ? (
           <div className="bg-white rounded-2xl p-12 text-center shadow-sm border border-rose-100">
-            <div className="text-4xl mb-3">✨</div>
             <p className="text-gray-500 font-medium">No active tickets pending.</p>
-            <p className="text-sm text-rose-400 mt-1">All clear for now.</p>
           </div>
         ) : (
           <div className="space-y-5">
@@ -79,45 +76,66 @@ export default function Warehouse() {
   );
 }
 
-function TicketCard({ ticket, onUpdate }) {
-  const [items, setItems] = useState(ticket.items);
-  const [processing, setProcessing] = useState(false);
+function statusStyle(status) {
+  if (status === 'CREATED' || status === 'ORDERED') return 'bg-amber-50 text-amber-700 border-amber-200';
+  if (status === 'PICKED_UP') return 'bg-violet-50 text-violet-700 border-violet-200';
+  if (status === 'DELIVERED') return 'bg-blue-50 text-blue-700 border-blue-200';
+  return 'bg-gray-50 text-gray-700 border-gray-200';
+}
 
-  const handleAction = async (actionType) => {
+function barColor(status) {
+  if (status === 'CREATED' || status === 'ORDERED') return 'bg-amber-400';
+  if (status === 'PICKED_UP') return 'bg-violet-400';
+  if (status === 'DELIVERED') return 'bg-blue-400';
+  return 'bg-gray-300';
+}
+
+function TicketCard({ ticket, onUpdate }) {
+  const [items, setItems] = useState(ticket.items || []);
+  const [comment, setComment] = useState('');
+  const [processing, setProcessing] = useState(false);
+  const status = ticket.status === 'CREATED' ? 'ORDERED' : ticket.status;
+
+  const sendUpdate = async (action, extra = {}) => {
     setProcessing(true);
+    const payloadItems = items.map((item) => ({
+      ...item,
+      deliveredQty: item.deliveredQty ?? item.orderedQty ?? 0,
+      returnedQty: item.returnedQty ?? item.deliveredQty ?? item.orderedQty ?? 0,
+    }));
+
     await fetch(API_URL, {
       method: 'POST',
       body: JSON.stringify({
-        action: actionType,
-        data: { ticketId: ticket.ticketId, items },
+        action,
+        data: {
+          ticketId: ticket.ticketId,
+          items: payloadItems,
+          comment,
+          username: localStorage.getItem('username') || '',
+          role: localStorage.getItem('role') || '',
+          ...extra,
+        },
       }),
     });
+
+    setComment('');
     onUpdate();
+    setProcessing(false);
   };
 
   return (
     <div className="bg-white rounded-2xl shadow-md shadow-rose-100/30 border border-rose-100 overflow-hidden">
-      {/* Colored left accent bar */}
       <div className="flex">
-        <div
-          className={`w-1.5 shrink-0 ${
-            ticket.status === 'CREATED' ? 'bg-amber-400' : 'bg-blue-400'
-          }`}
-        />
+        <div className={`w-1.5 shrink-0 ${barColor(status)}`} />
         <div className="flex-1 p-5 sm:p-6">
           <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 mb-5">
             <h3 className="text-lg font-bold text-gray-800">
               {ticket.ticketId}
               <span className="text-gray-400 font-normal ml-2 text-base">| {ticket.client}</span>
             </h3>
-            <span
-              className={`self-start px-3 py-1 rounded-full text-xs font-bold ${
-                ticket.status === 'CREATED'
-                  ? 'bg-amber-50 text-amber-700 border border-amber-200'
-                  : 'bg-blue-50 text-blue-700 border border-blue-200'
-              }`}
-            >
-              {ticket.status}
+            <span className={`self-start px-3 py-1 rounded-full text-xs font-bold border ${statusStyle(status)}`}>
+              {status}
             </span>
           </div>
 
@@ -127,26 +145,27 @@ function TicketCard({ ticket, onUpdate }) {
                 <tr className="border-b border-rose-50">
                   <th className="py-2.5 px-3 font-semibold text-rose-800/60">Item Name</th>
                   <th className="py-2.5 px-3 font-semibold text-rose-800/60">Ordered</th>
-                  {ticket.status === 'CREATED' && (
+                  {status === 'PICKED_UP' && (
                     <th className="py-2.5 px-3 font-semibold text-rose-800/60">Delivered Qty</th>
                   )}
-                  {ticket.status === 'DELIVERED' && (
+                  {status === 'DELIVERED' && (
                     <th className="py-2.5 px-3 font-semibold text-rose-800/60">Returned Qty</th>
                   )}
                 </tr>
               </thead>
               <tbody>
                 {items.map((item, idx) => (
-                  <tr key={item.id} className="border-b border-rose-50/60 last:border-0">
-                    <td className="py-3 px-3 font-medium text-gray-800">{item.name}</td>
+                  <tr key={item.id || idx} className="border-b border-rose-50/60 last:border-0">
+                    <td className="py-3 px-3 font-medium text-gray-800">
+                      {item.code ? `${item.code} · ` : ''}{item.name}
+                    </td>
                     <td className="py-3 px-3 text-gray-600">{item.orderedQty}</td>
-
-                    {ticket.status === 'CREATED' && (
+                    {status === 'PICKED_UP' && (
                       <td className="py-3 px-3">
                         <input
                           type="number"
                           defaultValue={item.orderedQty}
-                          className="w-20 px-2.5 py-1.5 border border-rose-200 rounded-lg bg-rose-50/30 focus:outline-none focus:ring-2 focus:ring-rose-400/50 focus:border-rose-400 transition text-center"
+                          className="w-20 px-2.5 py-1.5 border border-rose-200 rounded-lg bg-rose-50/30 text-center"
                           onChange={(e) => {
                             const copy = [...items];
                             copy[idx].deliveredQty = parseInt(e.target.value) || 0;
@@ -155,13 +174,12 @@ function TicketCard({ ticket, onUpdate }) {
                         />
                       </td>
                     )}
-
-                    {ticket.status === 'DELIVERED' && (
+                    {status === 'DELIVERED' && (
                       <td className="py-3 px-3">
                         <input
                           type="number"
-                          defaultValue={item.deliveredQty}
-                          className="w-20 px-2.5 py-1.5 border border-rose-200 rounded-lg bg-rose-50/30 focus:outline-none focus:ring-2 focus:ring-rose-400/50 focus:border-rose-400 transition text-center"
+                          defaultValue={item.deliveredQty ?? item.orderedQty}
+                          className="w-20 px-2.5 py-1.5 border border-rose-200 rounded-lg bg-rose-50/30 text-center"
                           onChange={(e) => {
                             const copy = [...items];
                             copy[idx].returnedQty = parseInt(e.target.value) || 0;
@@ -176,24 +194,69 @@ function TicketCard({ ticket, onUpdate }) {
             </table>
           </div>
 
-          {ticket.status === 'CREATED' && (
-            <button
-              disabled={processing}
-              onClick={() => handleAction('confirmDelivery')}
-              className="bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-700 hover:to-rose-600 text-white px-5 py-2.5 rounded-xl font-semibold shadow-md shadow-rose-200 transition disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {processing ? 'Processing...' : 'Confirm Delivery'}
-            </button>
+          {(ticket.history || []).length > 0 && (
+            <div className="mb-4 space-y-2">
+              {(ticket.history || []).map((h, i) => (
+                <div key={i} className="text-xs bg-rose-50/70 border border-rose-100 rounded-lg px-3 py-2">
+                  <span className="text-gray-500">{h.at}</span>
+                  {' · '}
+                  <span className="font-medium text-rose-800">{h.user}</span>
+                  {h.from !== h.to && (
+                    <span className="text-gray-600"> · {h.from} → {h.to}</span>
+                  )}
+                  {h.comment ? <p className="text-gray-800 mt-1">{h.comment}</p> : null}
+                </div>
+              ))}
+            </div>
           )}
-          {ticket.status === 'DELIVERED' && (
+
+          <textarea
+            rows={2}
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            placeholder="Comment (if you cannot close / extra note)..."
+            className="w-full mb-3 px-3 py-2 border border-rose-200 rounded-lg focus:ring-2 focus:ring-rose-400 outline-none text-sm"
+          />
+
+          <div className="flex flex-wrap gap-2">
             <button
-              disabled={processing}
-              onClick={() => handleAction('processReturn')}
-              className="bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-700 hover:to-emerald-600 text-white px-5 py-2.5 rounded-xl font-semibold shadow-md shadow-emerald-200 transition disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={processing || !comment.trim()}
+              onClick={() => sendUpdate('updateTicket')}
+              className="px-4 py-2.5 rounded-xl font-semibold border border-rose-200 text-rose-700 bg-white hover:bg-rose-50 disabled:opacity-50"
             >
-              {processing ? 'Processing...' : 'Process Return & Close Ticket'}
+              Save comment
             </button>
-          )}
+
+            {status === 'ORDERED' && (
+              <button
+                disabled={processing}
+                onClick={() => sendUpdate('updateTicket', { nextStatus: 'PICKED_UP' })}
+                className="px-4 py-2.5 rounded-xl font-semibold text-white bg-violet-600 hover:bg-violet-700 disabled:opacity-50"
+              >
+                Mark picked up
+              </button>
+            )}
+
+            {status === 'PICKED_UP' && (
+              <button
+                disabled={processing}
+                onClick={() => sendUpdate('confirmDelivery')}
+                className="px-4 py-2.5 rounded-xl font-semibold text-white bg-rose-600 hover:bg-rose-700 disabled:opacity-50"
+              >
+                Confirm delivery
+              </button>
+            )}
+
+            {status === 'DELIVERED' && (
+              <button
+                disabled={processing}
+                onClick={() => sendUpdate('processReturn')}
+                className="px-4 py-2.5 rounded-xl font-semibold text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50"
+              >
+                Process return & close
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>
