@@ -1,26 +1,16 @@
-import React, { useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { logout } from '../api';
+import Banner from '../components/Banner';
 
 export default function Dashboard() {
   const navigate = useNavigate();
+  const location = useLocation();
+  // Access control (admin only) is handled by RequireAdmin in App.jsx.
+  const [notice, setNotice] = useState(location.state?.notice || '');
 
-  useEffect(() => {
-    if (!localStorage.getItem('isAuthenticated')) {
-      navigate('/login');
-      return;
-    }
-    // Only admin can access these pages
-    if (localStorage.getItem('role') !== 'admin') {
-      navigate('/client');
-      return;
-    }
-    // ... rest of the existing code (fetchTickets / fetchStock etc.)
-  }, [navigate]);
-
-  const handleLogout = () => {
-    localStorage.removeItem('isAuthenticated');
-    localStorage.removeItem('role');
-    localStorage.removeItem('username');
+  const handleLogout = async () => {
+    await logout();
     navigate('/login');
   };
 
@@ -52,6 +42,13 @@ export default function Dashboard() {
       title: 'Activity Log',
       description: 'See who created tickets and what items were ordered.',
       accent: 'from-rose-500 to-pink-400',
+    },
+    {
+      path: '/users',
+      emoji: '👥',
+      title: 'Users',
+      description: 'Create users, reset passwords and manage roles.',
+      accent: 'from-pink-500 to-rose-600',
     }
   ];
 
@@ -79,8 +76,10 @@ export default function Dashboard() {
           </button>
         </div>
 
+        <Banner type="success" message={notice} onClose={() => setNotice('')} className="mb-6" />
+
         {/* Navigation Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
           {cards.map((card) => (
             <button
               key={card.path}

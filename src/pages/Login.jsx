@@ -1,52 +1,46 @@
-import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { API_URL } from '../config';
+import { useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { login } from '../api';
+import { saveSession } from '../session';
+import Banner from '../components/Banner';
 
 export default function Login() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState(
+    searchParams.get('expired') ? 'Your session has expired. Please sign in again.' : ''
+  );
 
   const handleLoginSubmit = async (e) => {
     e.preventDefault();
-    if (!username || !password) return alert('Enter both username and password');
+    if (!username || !password) {
+      setError('Enter both username and password');
+      return;
+    }
 
     setIsLoading(true);
+    setError('');
 
     try {
-      const res = await fetch(API_URL, {
-        method: 'POST',
-        body: JSON.stringify({
-          action: 'login',
-          username: username.trim(),
-          password: password.trim(),
-        }),
-      });
+      const data = await login(username.trim(), password.trim());
+      saveSession({ token: data.token, username: data.username || username.trim(), role: data.role }); // role: "a", "b" or "admin"
 
-      const data = await res.json();
-
-      if (data.status === 'success') {
-        localStorage.setItem('isAuthenticated', 'true');
-        localStorage.setItem('role', data.role); // "a", "b" or "admin"
-        localStorage.setItem('username', username.trim());
-
-        // Redirect based on role
-        if (data.role === 'admin') {
-          navigate('/dashboard');
-        } else {
-          // Type A or Type B go directly to New Request
-          navigate('/client');
-        }
+      // Redirect based on role
+      if (data.role === 'admin') {
+        navigate('/dashboard');
       } else {
-        alert(data.message || 'Invalid credentials');
+        // Type A or Type B go directly to New Request
+        navigate('/client');
       }
     } catch (err) {
       console.error(err);
-      alert('Connection error. Please try again.');
+      setError(err.message || 'Connection error. Please try again.');
+    } finally {
+      setIsLoading(false);
     }
-
-    setIsLoading(false);
   };
 
   return (
@@ -67,6 +61,8 @@ export default function Login() {
               Warehouse Ticketing Portal
             </p>
           </div>
+
+          <Banner message={error} onClose={() => setError('')} className="mb-5" />
 
           <form onSubmit={handleLoginSubmit} className="space-y-5">
             <div>
@@ -113,10 +109,6 @@ export default function Login() {
               )}
             </button>
           </form>
-
-          <p className="text-center text-xs text-rose-400 mt-6">
-            typeA / typeB / admin  •  password: 1234
-          </p>
         </div>
       </div>
     </div>

@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { API_URL } from '../config';
+import { api } from '../api';
+import Banner from '../components/Banner';
 
 export default function Logs() {
   const navigate = useNavigate();
@@ -8,44 +9,36 @@ export default function Logs() {
   const [logs, setLogs] = useState([]);
   const [tickets, setTickets] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [error, setError] = useState('');
   const [query, setQuery] = useState('');
 
+  // Admin only (RequireAdmin in App.jsx + server-side check).
   useEffect(() => {
-    if (!localStorage.getItem('isAuthenticated')) {
-      navigate('/login');
-      return;
-    }
-    if (localStorage.getItem('role') !== 'admin') {
-      navigate('/client');
-      return;
-    }
-    loadAll();
-  }, [navigate]);
+    let cancelled = false;
+    Promise.allSettled([api('getLogs'), api('getTickets')])
+      .then(([logsRes, ticketsRes]) => {
+        if (cancelled) return;
+        if (logsRes.status === 'fulfilled') setLogs(logsRes.value.logs || []);
+        if (ticketsRes.status === 'fulfilled') setTickets(ticketsRes.value.tickets || []);
+        const failedRes = [logsRes, ticketsRes].find((r) => r.status === 'rejected');
+        if (failedRes) {
+          console.error(failedRes.reason);
+          setError('Could not load history. ' + (failedRes.reason?.message || ''));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadKey]);
 
-  const loadAll = async () => {
+  const loadAll = () => {
     setLoading(true);
-    try {
-      const [logsRes, ticketsRes] = await Promise.all([
-        fetch(`${API_URL}?action=getLogs`),
-        fetch(`${API_URL}?action=getTickets`),
-      ]);
-
-      const logsText = await logsRes.text();
-      const ticketsText = await ticketsRes.text();
-
-      if (logsText.trim().startsWith('{')) {
-        const data = JSON.parse(logsText);
-        if (data.status === 'success') setLogs(data.logs || []);
-      }
-      if (ticketsText.trim().startsWith('{')) {
-        const data = JSON.parse(ticketsText);
-        if (data.status === 'success') setTickets(data.tickets || []);
-      }
-    } catch (e) {
-      console.error(e);
-      alert('Could not load history.');
-    }
-    setLoading(false);
+    setError('');
+    setReloadKey((n) => n + 1);
   };
 
   const q = query.trim().toLowerCase();
@@ -127,6 +120,8 @@ export default function Logs() {
             <p className="text-sm text-rose-500">Tickets, comments and activity</p>
           </div>
         </div>
+
+        <Banner message={error} onClose={() => setError('')} className="mb-4" />
 
         <input
           type="search"

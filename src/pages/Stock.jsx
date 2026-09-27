@@ -1,47 +1,95 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { API_URL } from '../config';
+import { api } from '../api';
+import Banner from '../components/Banner';
+import SearchBar, { NoSearchResults } from '../components/SearchBar';
+import { filterStock } from '../utils/search';
+
+// Who may see / order an item (Inventory column "visibleTo"; the server sends visibleRoles to admins).
+const VISIBILITY_STYLES = {
+  'A+B': 'bg-emerald-50 text-emerald-700 border-emerald-100',
+  A: 'bg-violet-50 text-violet-700 border-violet-100',
+  B: 'bg-sky-50 text-sky-700 border-sky-100',
+  'Admin only': 'bg-gray-100 text-gray-500 border-gray-200',
+};
+
+function visibilityLabel(item) {
+  const roles = item.visibleRoles || [];
+  const a = roles.includes('a');
+  const b = roles.includes('b');
+  return a && b ? 'A+B' : a ? 'A' : b ? 'B' : 'Admin only';
+}
+
+function VisibilityBadge({ item }) {
+  const label = visibilityLabel(item);
+  const raw = String(item.visibleTo || '').trim();
+  // A filled-in cell that could not be read (e.g. a typo) is treated as admin only – highlight it.
+  const unreadable = raw !== '' && label === 'Admin only';
+  const title = unreadable
+    ? `Unrecognised value "${raw}" – treated as admin only. Use TypeA, TypeB or TypeA+TypeB.`
+    : raw
+      ? `visibleTo: ${raw}`
+      : 'Empty visibleTo – only admins see this item';
+  return (
+    <span
+      title={title}
+      data-testid="visible-to"
+      className={`inline-flex whitespace-nowrap px-2.5 py-0.5 rounded-full text-xs font-semibold border ${
+        unreadable ? 'bg-amber-50 text-amber-700 border-amber-200' : VISIBILITY_STYLES[label]
+      }`}
+    >
+      {unreadable ? '⚠ Admin only' : label}
+    </span>
+  );
+}
 
 export default function Stock() {
   const navigate = useNavigate();
   const [stock, setStock] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [error, setError] = useState('');
   const [preview, setPreview] = useState(null);
   const [placeFilter, setPlaceFilter] = useState('all');
+  const [query, setQuery] = useState('');
 
+  // Admin only (RequireAdmin in App.jsx).
   useEffect(() => {
-    if (!localStorage.getItem('isAuthenticated')) {
-      navigate('/login');
-      return;
-    }
-    if (localStorage.getItem('role') !== 'admin') {
-      navigate('/client');
-      return;
-    }
-    fetchStock();
-  }, [navigate]);
+    let cancelled = false;
+    api('getStock')
+      .then((data) => {
+        if (!cancelled) setStock(data.stock || []);
+      })
+      .catch((e) => {
+        console.error(e);
+        if (!cancelled) setError(e.message);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadKey]);
 
-  const fetchStock = async () => {
+  const fetchStock = () => {
     setLoading(true);
-    try {
-      const res = await fetch(`${API_URL}?action=getStock`);
-      const text = await res.text();
-      if (!text.trim().startsWith('{')) {
-        alert('Temporary connection problem. Please try again.');
-        setLoading(false);
-        return;
-      }
-      const data = JSON.parse(text);
-      if (data.status === 'success') setStock(data.stock || []);
-    } catch (e) {
-      console.error(e);
-    }
-    setLoading(false);
+    setError('');
+    setReloadKey((n) => n + 1);
   };
 
   const places = [...new Set(stock.map((s) => s.place).filter(Boolean))];
-  const visibleStock =
-    placeFilter === 'all' ? stock : stock.filter((item) => item.place === placeFilter);
+  const visibleStock = filterStock(stock, { query, place: placeFilter });
+  const visibilityCounts = stock.reduce(
+    (acc, item) => {
+      const roles = item.visibleRoles || [];
+      if (roles.includes('a')) acc.a += 1;
+      if (roles.includes('b')) acc.b += 1;
+      if (roles.length === 0) acc.admin += 1;
+      return acc;
+    },
+    { a: 0, b: 0, admin: 0 }
+  );
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-rose-50 via-white to-rose-50">
@@ -68,6 +116,24 @@ export default function Stock() {
               Refresh
             </button>
           </div>
+
+          <Banner message={error} onClose={() => setError('')} className="mb-5" />
+
+          <SearchBar
+            value={query}
+            onChange={setQuery}
+            shown={visibleStock.length}
+            total={stock.length}
+            className="mb-4"
+          />
+
+          {stock.length > 0 && (
+            <p className="text-xs text-gray-500 mb-3" data-testid="visibility-summary">
+              Visible to Type A: <span className="font-semibold text-violet-700">{visibilityCounts.a}</span>
+              {' · '}Type B: <span className="font-semibold text-sky-700">{visibilityCounts.b}</span>
+              {' · '}Admin only: <span className="font-semibold text-gray-700">{visibilityCounts.admin}</span>
+            </p>
+          )}
 
           <div className="flex flex-wrap gap-2 mb-5">
             <button
@@ -101,8 +167,15 @@ export default function Stock() {
             <div className="flex items-center justify-center py-16">
               <p className="text-rose-600 font-medium">Loading inventory...</p>
             </div>
-          ) : visibleStock.length === 0 ? (
+          ) : stock.length === 0 ? (
             <div className="text-center py-16 text-gray-400">No inventory data available.</div>
+          ) : visibleStock.length === 0 ? (
+            <NoSearchResults
+              query={query}
+              placeFilter={placeFilter}
+              onClearSearch={() => setQuery('')}
+              onShowAllPlaces={() => setPlaceFilter('all')}
+            />
           ) : (
             <div className="overflow-x-auto -mx-2">
               <table className="w-full text-sm text-left">
@@ -113,6 +186,7 @@ export default function Stock() {
                     <th className="py-3 px-4 font-semibold text-rose-800/70">Item</th>
                     <th className="py-3 px-4 font-semibold text-rose-800/70">Place</th>
                     <th className="py-3 px-4 font-semibold text-rose-800/70">Qty</th>
+                    <th className="py-3 px-4 font-semibold text-rose-800/70">Visible to</th>
                     <th className="py-3 px-4 font-semibold text-rose-800/70">Comments</th>
                   </tr>
                 </thead>
@@ -146,6 +220,9 @@ export default function Stock() {
                         >
                           {item.quantity}
                         </span>
+                      </td>
+                      <td className="py-3.5 px-4">
+                        <VisibilityBadge item={item} />
                       </td>
                       <td className="py-3.5 px-4 text-xs text-amber-800 max-w-xs">
                         {item.comments || '—'}

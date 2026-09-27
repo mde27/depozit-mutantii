@@ -1,89 +1,102 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { API_URL } from '../config';
+import { api, logout } from '../api';
+import { getSession } from '../session';
+import Banner from '../components/Banner';
+import SearchBar, { NoSearchResults } from '../components/SearchBar';
+import { filterStock } from '../utils/search';
+import AddressSection from '../components/AddressSection';
+import {
+  ADDRESS_SECTIONS,
+  blockTitle,
+  emptyBlock,
+  legacyFieldsFromBlocks,
+  normalizeBlock,
+  validateBlocks,
+} from '../utils/addresses';
+
+const NO_ITEMS_MESSAGE = 'Select at least one item.';
+const INFO_FIELD_LABELS = { pm_bt: 'Nume responsabil proiect BT', pm_bt_phone: 'Nr telefon PM BT' };
+const emptyForm = () => ({ pm_bt: '', pm_bt_phone: '', solicit_retur: false, comments: '' });
 
 export default function ClientRequest() {
   const navigate = useNavigate();
   const [stock, setStock] = useState([]);
   const [selectedItems, setSelectedItems] = useState({});
   const [loading, setLoading] = useState(false);
+  const [stockLoading, setStockLoading] = useState(true);
+  const [stockReload, setStockReload] = useState(0);
   const [step, setStep] = useState(1);
   const [placeFilter, setPlaceFilter] = useState('all');
+  const [query, setQuery] = useState('');
   const [preview, setPreview] = useState(null);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
 
-  const role = localStorage.getItem('role') || '';
+  const { role, username } = getSession();
 
-  const [form, setForm] = useState({
-    pm_bt: '',
-    pm_bt_phone: '',
-    address_ridicare: '',
-    localitate_ridicare: '',
-    judet_ridicare: '',
-    pickup_date: '',
-    pickup_interval: '',
-    nr_telefon_ridicare: '',
-    address_livrare: '',
-    localitate_livrare: '',
-    judet_livrare: '',
-    delivery_date: '',
-    delivery_interval: '',
-    nr_telefon_descarcare: '',
-    solicit_retur: false,
-    address_retur: '',
-    localitate_retur: '',
-    judet_retur: '',
-    retur_date: '',
-    retur_interval: '',
-    comments: '',
-    recipient: 'zmanaszes1@gmail.com',
-  });
+  const [form, setForm] = useState(emptyForm);
+  // 1..10 address blocks per section; see src/utils/addresses.js
+  const [pickups, setPickups] = useState(() => [emptyBlock()]);
+  const [deliveries, setDeliveries] = useState(() => [emptyBlock()]);
+  const [returns, setReturns] = useState(() => [emptyBlock()]);
+  const [fieldErrors, setFieldErrors] = useState({});
 
+  // Login is required (RequireAuth in App.jsx); the server checks the session token.
   useEffect(() => {
-    if (!localStorage.getItem('isAuthenticated')) {
-      navigate('/login');
-      return;
-    }
-    fetchStock();
-  }, [navigate]);
+    let cancelled = false;
+    api('getStock')
+      .then((data) => {
+        if (cancelled) return;
+        // The server only returns the items visible to this user's type (Inventory "visibleTo").
+        setStock(data.stock || []);
+      })
+      .catch((e) => {
+        console.error(e);
+        if (!cancelled) setError(e.message);
+      })
+      .finally(() => {
+        if (!cancelled) setStockLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [stockReload]);
 
-  const fetchStock = async () => {
-    setLoading(true);
-    try {
-      const res = await fetch(`${API_URL}?action=getStock`);
-      const text = await res.text();
-
-      if (!text.trim().startsWith('{')) {
-        console.error('Received non-JSON:', text.slice(0, 200));
-        alert('Temporary connection problem with the server. Please try again in a few seconds.');
-        setLoading(false);
-        return;
-      }
-
-      const data = JSON.parse(text);
-      if (data.status === 'success') {
-        let items = data.stock || [];
-        if (role === 'a') {
-          items = items.filter((item) => item.forA === true);
-        }
-        setStock(items);
-      }
-    } catch (e) {
-      console.error(e);
-      alert('Connection error. Please try again.');
-    }
-    setLoading(false);
+  const fetchStock = () => {
+    setStockLoading(true);
+    setStockReload((n) => n + 1);
   };
 
   const updateForm = (field, value) => {
     setForm((prev) => ({ ...prev, [field]: value }));
+    clearFieldError(field);
+  };
+
+  // key = one field ("pickups.1.phone"); section = drop all errors of that section.
+  const clearFieldError = (key, section) => {
+    setFieldErrors((prev) => {
+      const next = { ...prev };
+      Object.keys(next).forEach((k) => {
+        if (k === key || (section && k.startsWith(`${section}.`))) delete next[k];
+      });
+      return next;
+    });
+  };
+
+  const setItemQty = (id, qty) => {
+    setSelectedItems((prev) => ({ ...prev, [id]: qty }));
+    if (qty > 0 && error === NO_ITEMS_MESSAGE) setError('');
   };
 
   const handleNext = () => {
     const hasItems = Object.values(selectedItems).some((q) => q > 0);
     if (!hasItems) {
-      alert('Select at least one item.');
+      setError(NO_ITEMS_MESSAGE);
       return;
     }
+    setError('');
+    setSuccess('');
     setStep(2);
   };
 
@@ -102,93 +115,100 @@ export default function ClientRequest() {
         };
       });
 
-    if (itemsToOrder.length === 0) return alert('Select at least one item.');
-
-    const required = [
-      'pm_bt', 'pm_bt_phone',
-      'address_ridicare', 'localitate_ridicare', 'judet_ridicare', 'nr_telefon_ridicare', 'pickup_date',
-      'address_livrare', 'localitate_livrare', 'judet_livrare', 'nr_telefon_descarcare', 'delivery_date'
-    ];
-
-    for (const field of required) {
-      if (!form[field]?.trim()) {
-        alert(`Please fill in: ${field.replace(/_/g, ' ')}`);
-        return;
-      }
+    if (itemsToOrder.length === 0) {
+      setError(NO_ITEMS_MESSAGE);
+      return;
     }
 
-    if (form.solicit_retur) {
-      if (!form.address_retur || !form.localitate_retur || !form.judet_retur || !form.retur_date) {
-        alert('Please fill in all return address fields.');
-        return;
-      }
+    // Validate every block; errors are shown next to each field and summarised per block.
+    const sections = { pickups, deliveries, ...(form.solicit_retur ? { returns } : {}) };
+    const errors = {};
+    ['pm_bt', 'pm_bt_phone'].forEach((f) => {
+      if (!form[f]?.trim()) errors[f] = 'Câmp obligatoriu';
+    });
+    Object.entries(sections).forEach(([section, blocks]) => Object.assign(errors, validateBlocks(section, blocks)));
+
+    if (Object.keys(errors).length) {
+      setFieldErrors(errors);
+      const groups = {};
+      Object.keys(errors).forEach((key) => {
+        const [section, index, field] = key.split('.');
+        const title = field ? blockTitle(section, Number(index)) : 'Informații';
+        const label = field ? ADDRESS_SECTIONS[section].labels[field] : INFO_FIELD_LABELS[section];
+        (groups[title] = groups[title] || []).push(label);
+      });
+      setError('Please fill in the required fields:\n' +
+        Object.entries(groups).map(([title, labels]) => `• ${title}: ${labels.join(', ')}`).join('\n'));
+      const first = document.querySelector(`[data-field="${Object.keys(errors)[0]}"]`);
+      first?.focus();
+      return;
     }
+
+    const clean = (blocks) => blocks.map(normalizeBlock);
+    const info = {
+      pm_bt: form.pm_bt.trim(),
+      pm_bt_phone: form.pm_bt_phone.trim(),
+      solicit_retur: form.solicit_retur,
+      comments: form.comments,
+      pickups: clean(pickups),
+      deliveries: clean(deliveries),
+      returns: form.solicit_retur ? clean(returns) : [],
+    };
+    // Legacy flat fields (address_ridicare, pickup_date, ..., nr_telefon_retur) = first block.
+    Object.assign(
+      info,
+      legacyFieldsFromBlocks('pickups', info.pickups),
+      legacyFieldsFromBlocks('deliveries', info.deliveries),
+      legacyFieldsFromBlocks('returns', info.returns)
+    );
 
     setLoading(true);
+    setError('');
 
     try {
-      const res = await fetch(API_URL, {
-        method: 'POST',
-        body: JSON.stringify({
-          action: 'createTicket',
-          data: {
-            clientName: form.pm_bt,
-            items: itemsToOrder,
-            info: form,
-            username: localStorage.getItem('username') || '',
-            role: localStorage.getItem('role') || '',
-          },
-        }),
+      // Email recipients are fixed on the server; username/role come from the session token.
+      const data = await api('createTicket', {
+        clientName: info.pm_bt,
+        items: itemsToOrder,
+        info,
       });
 
-      const data = await res.json();
-
-      if (data.status === 'success') {
-        alert(
-          'Ticket created: ' + data.ticketId +
-          '\nEmail: ' + (data.emailStatus || 'unknown')
-        );
-        if (role === 'admin') {
-          navigate('/dashboard');
-        } else {
-          setSelectedItems({});
-          setForm({
-            pm_bt: '', pm_bt_phone: '',
-            address_ridicare: '', localitate_ridicare: '', judet_ridicare: '',
-            pickup_date: '', pickup_interval: '', nr_telefon_ridicare: '',
-            address_livrare: '', localitate_livrare: '', judet_livrare: '',
-            delivery_date: '', delivery_interval: '', nr_telefon_descarcare: '',
-            solicit_retur: false,
-            address_retur: '', localitate_retur: '', judet_retur: '',
-            retur_date: '', retur_interval: '',
-            comments: '',
-            recipient: 'zmanaszes1@gmail.com',
-          });
-          setStep(1);
-          fetchStock();
-        }
+      const message = 'Ticket created: ' + data.ticketId +
+        '\nEmail: ' + (data.emailStatus || 'unknown');
+      if (role === 'admin') {
+        navigate('/dashboard', { state: { notice: message } });
       } else {
-        alert(data.message || 'Error creating ticket');
+        setSelectedItems({});
+        setForm(emptyForm());
+        setPickups([emptyBlock()]);
+        setDeliveries([emptyBlock()]);
+        setReturns([emptyBlock()]);
+        setFieldErrors({});
+        setStep(1);
+        setSuccess(message);
+        window.scrollTo(0, 0);
+        fetchStock();
       }
     } catch (err) {
       console.error(err);
-      alert('Connection error');
+      setError(err.message || 'Error creating ticket');
+    } finally {
+      setLoading(false);
     }
-
-    setLoading(false);
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem('isAuthenticated');
-    localStorage.removeItem('role');
-    localStorage.removeItem('username');
+  const handleLogout = async () => {
+    await logout();
     navigate('/login');
   };
 
   const places = [...new Set(stock.map((s) => s.place).filter(Boolean))];
-  const visibleStock = placeFilter === 'all'
-    ? stock
-    : stock.filter((item) => item.place === placeFilter);
+  // Filtering only changes what is shown; selectedItems (keyed by id) is never touched,
+  // so quantities are kept for items hidden by the search or place filter.
+  const visibleStock = filterStock(stock, { query, place: placeFilter });
+  const visibleIds = new Set(visibleStock.map((item) => String(item.id)));
+  const selectedIds = Object.keys(selectedItems).filter((id) => selectedItems[id] > 0);
+  const hiddenSelected = selectedIds.filter((id) => !visibleIds.has(String(id))).length;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-rose-50 via-white to-rose-50">
@@ -203,7 +223,7 @@ export default function ClientRequest() {
             </button>
           ) : (
             <div className="text-sm text-rose-600 font-medium">
-              Logged in as <span className="font-bold">{localStorage.getItem('username')}</span> ({role.toUpperCase()})
+              Logged in as <span className="font-bold">{username}</span> ({role.toUpperCase()})
             </div>
           )}
           <button
@@ -223,13 +243,18 @@ export default function ClientRequest() {
               <h2 className="text-2xl font-bold text-rose-900">
                 {step === 1 ? 'Create New Ticket' : 'Order Details'}
               </h2>
-              {role === 'a' && step === 1 && (
-                <p className="text-xs text-rose-500 mt-0.5">Showing only items available for Type A</p>
+              {(role === 'a' || role === 'b') && step === 1 && (
+                <p className="text-xs text-rose-500 mt-0.5" data-testid="type-note">
+                  Showing items available for Type {role.toUpperCase()}
+                </p>
               )}
             </div>
           </div>
 
-          {loading && step === 1 ? (
+          <Banner type="success" message={success} onClose={() => setSuccess('')} className="mb-5" />
+          {step === 1 && <Banner message={error} onClose={() => setError('')} className="mb-5" />}
+
+          {stockLoading && step === 1 ? (
             <div className="flex items-center justify-center py-16">
               <div className="flex flex-col items-center gap-3">
                 <svg className="animate-spin h-8 w-8 text-rose-500" viewBox="0 0 24 24">
@@ -242,7 +267,28 @@ export default function ClientRequest() {
           ) : step === 1 ? (
             <>
               <div className="mb-7">
-                <label className="block text-sm font-semibold text-rose-900/80 mb-3">Select Items</label>
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                  <label className="block text-sm font-semibold text-rose-900/80">Select Items</label>
+                  {selectedIds.length > 0 && (
+                    <span
+                      data-testid="selected-count"
+                      className="px-2.5 py-1 rounded-full text-xs font-bold bg-rose-50 text-rose-700 border border-rose-200"
+                    >
+                      {selectedIds.length} {selectedIds.length === 1 ? 'item' : 'items'} selected
+                      {hiddenSelected > 0 && (
+                        <span className="font-medium text-rose-500"> · {hiddenSelected} hidden by filter</span>
+                      )}
+                    </span>
+                  )}
+                </div>
+
+                <SearchBar
+                  value={query}
+                  onChange={setQuery}
+                  shown={visibleStock.length}
+                  total={stock.length}
+                  className="mb-3"
+                />
 
                 <div className="flex flex-wrap gap-2 mb-4">
                   <button
@@ -273,8 +319,17 @@ export default function ClientRequest() {
                 </div>
 
                 <div className="space-y-2.5 max-h-96 overflow-y-auto pr-1">
-                  {visibleStock.length === 0 ? (
-                    <p className="text-center text-gray-400 py-8">No stock items available.</p>
+                  {stock.length === 0 ? (
+                    <p className="text-center text-gray-400 py-8">
+                      {role === 'admin' ? 'No stock items available.' : 'No stock items are available for your account yet.'}
+                    </p>
+                  ) : visibleStock.length === 0 ? (
+                    <NoSearchResults
+                      query={query}
+                      placeFilter={placeFilter}
+                      onClearSearch={() => setQuery('')}
+                      onShowAllPlaces={() => setPlaceFilter('all')}
+                    />
                   ) : (
                     visibleStock.map((item) => (
                       <div
@@ -318,12 +373,7 @@ export default function ClientRequest() {
                           min="0"
                           max={item.quantity}
                           value={selectedItems[item.id] || ''}
-                          onChange={(e) =>
-                            setSelectedItems({
-                              ...selectedItems,
-                              [item.id]: parseInt(e.target.value) || 0,
-                            })
-                          }
+                          onChange={(e) => setItemQty(item.id, parseInt(e.target.value) || 0)}
                           className="w-20 px-2.5 py-1.5 text-center border border-rose-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-rose-400/50 focus:border-rose-400 transition"
                           placeholder="0"
                         />
@@ -341,7 +391,7 @@ export default function ClientRequest() {
               </button>
             </>
           ) : (
-            <form onSubmit={handleSubmit} className="space-y-6">
+            <form onSubmit={handleSubmit} noValidate className="space-y-6">
               <div className="bg-rose-50/50 border border-rose-100 rounded-xl p-5">
                 <h3 className="text-lg font-bold text-rose-800 mb-4">👤 Informații</h3>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -349,151 +399,49 @@ export default function ClientRequest() {
                     <label className="block text-sm font-medium text-gray-700 mb-1">Nume responsabil proiect BT *</label>
                     <input
                       required
+                      data-field="pm_bt"
+                      aria-invalid={fieldErrors.pm_bt ? 'true' : undefined}
                       value={form.pm_bt}
                       onChange={(e) => updateForm('pm_bt', e.target.value)}
-                      className="w-full px-3 py-2 border border-rose-200 rounded-lg focus:ring-2 focus:ring-rose-400 outline-none"
+                      className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-rose-400 outline-none ${fieldErrors.pm_bt ? 'border-red-400 bg-red-50/40' : 'border-rose-200'}`}
                     />
+                    {fieldErrors.pm_bt && <p className="text-xs text-red-600 mt-1">{fieldErrors.pm_bt}</p>}
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Nr telefon PM BT *</label>
                     <input
                       required
+                      data-field="pm_bt_phone"
+                      aria-invalid={fieldErrors.pm_bt_phone ? 'true' : undefined}
                       value={form.pm_bt_phone}
                       onChange={(e) => updateForm('pm_bt_phone', e.target.value)}
-                      className="w-full px-3 py-2 border border-rose-200 rounded-lg focus:ring-2 focus:ring-rose-400 outline-none"
+                      className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-rose-400 outline-none ${fieldErrors.pm_bt_phone ? 'border-red-400 bg-red-50/40' : 'border-rose-200'}`}
                     />
+                    {fieldErrors.pm_bt_phone && <p className="text-xs text-red-600 mt-1">{fieldErrors.pm_bt_phone}</p>}
                   </div>
                 </div>
               </div>
 
               <div className="bg-rose-50/50 border border-rose-100 rounded-xl p-5">
                 <h3 className="text-lg font-bold text-rose-800 mb-4">📦 Încarcare (Ridicare)</h3>
-                <div className="space-y-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Adresa ridicare *</label>
-                    <input
-                      required
-                      value={form.address_ridicare}
-                      onChange={(e) => updateForm('address_ridicare', e.target.value)}
-                      className="w-full px-3 py-2 border border-rose-200 rounded-lg focus:ring-2 focus:ring-rose-400 outline-none"
-                    />
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Localitate ridicare *</label>
-                      <input
-                        required
-                        value={form.localitate_ridicare}
-                        onChange={(e) => updateForm('localitate_ridicare', e.target.value)}
-                        className="w-full px-3 py-2 border border-rose-200 rounded-lg focus:ring-2 focus:ring-rose-400 outline-none"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Județ ridicare *</label>
-                      <input
-                        required
-                        value={form.judet_ridicare}
-                        onChange={(e) => updateForm('judet_ridicare', e.target.value)}
-                        className="w-full px-3 py-2 border border-rose-200 rounded-lg focus:ring-2 focus:ring-rose-400 outline-none"
-                      />
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Data ridicare *</label>
-                      <input
-                        type="date"
-                        required
-                        value={form.pickup_date}
-                        onChange={(e) => updateForm('pickup_date', e.target.value)}
-                        className="w-full px-3 py-2 border border-rose-200 rounded-lg focus:ring-2 focus:ring-rose-400 outline-none"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Interval orar (opțional)</label>
-                      <input
-                        value={form.pickup_interval}
-                        onChange={(e) => updateForm('pickup_interval', e.target.value)}
-                        placeholder="ex: 14:00 - 16:00"
-                        className="w-full px-3 py-2 border border-rose-200 rounded-lg focus:ring-2 focus:ring-rose-400 outline-none"
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Nr de telefon ridicare *</label>
-                    <input
-                      required
-                      value={form.nr_telefon_ridicare}
-                      onChange={(e) => updateForm('nr_telefon_ridicare', e.target.value)}
-                      className="w-full px-3 py-2 border border-rose-200 rounded-lg focus:ring-2 focus:ring-rose-400 outline-none"
-                    />
-                  </div>
-                </div>
+                <AddressSection
+                  section="pickups"
+                  blocks={pickups}
+                  onChange={setPickups}
+                  errors={fieldErrors}
+                  onFieldEdited={clearFieldError}
+                />
               </div>
 
               <div className="bg-rose-50/50 border border-rose-100 rounded-xl p-5">
                 <h3 className="text-lg font-bold text-rose-800 mb-4">🚚 Descărcare (Livrare)</h3>
-                <div className="space-y-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Adresa livrare *</label>
-                    <input
-                      required
-                      value={form.address_livrare}
-                      onChange={(e) => updateForm('address_livrare', e.target.value)}
-                      className="w-full px-3 py-2 border border-rose-200 rounded-lg focus:ring-2 focus:ring-rose-400 outline-none"
-                    />
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Localitate livrare *</label>
-                      <input
-                        required
-                        value={form.localitate_livrare}
-                        onChange={(e) => updateForm('localitate_livrare', e.target.value)}
-                        className="w-full px-3 py-2 border border-rose-200 rounded-lg focus:ring-2 focus:ring-rose-400 outline-none"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Județ livrare *</label>
-                      <input
-                        required
-                        value={form.judet_livrare}
-                        onChange={(e) => updateForm('judet_livrare', e.target.value)}
-                        className="w-full px-3 py-2 border border-rose-200 rounded-lg focus:ring-2 focus:ring-rose-400 outline-none"
-                      />
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Data livrare *</label>
-                      <input
-                        type="date"
-                        required
-                        value={form.delivery_date}
-                        onChange={(e) => updateForm('delivery_date', e.target.value)}
-                        className="w-full px-3 py-2 border border-rose-200 rounded-lg focus:ring-2 focus:ring-rose-400 outline-none"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Interval orar (opțional)</label>
-                      <input
-                        value={form.delivery_interval}
-                        onChange={(e) => updateForm('delivery_interval', e.target.value)}
-                        placeholder="ex: 10:00 - 12:00"
-                        className="w-full px-3 py-2 border border-rose-200 rounded-lg focus:ring-2 focus:ring-rose-400 outline-none"
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Nr de telefon descarcare *</label>
-                    <input
-                      required
-                      value={form.nr_telefon_descarcare}
-                      onChange={(e) => updateForm('nr_telefon_descarcare', e.target.value)}
-                      className="w-full px-3 py-2 border border-rose-200 rounded-lg focus:ring-2 focus:ring-rose-400 outline-none"
-                    />
-                  </div>
-                </div>
+                <AddressSection
+                  section="deliveries"
+                  blocks={deliveries}
+                  onChange={setDeliveries}
+                  errors={fieldErrors}
+                  onFieldEdited={clearFieldError}
+                />
               </div>
 
               <div className="bg-rose-50/50 border border-rose-100 rounded-xl p-5">
@@ -509,57 +457,14 @@ export default function ClientRequest() {
                 </label>
 
                 {form.solicit_retur && (
-                  <div className="space-y-4 pt-2 border-t border-rose-200">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Adresa retur *</label>
-                      <input
-                        required={form.solicit_retur}
-                        value={form.address_retur}
-                        onChange={(e) => updateForm('address_retur', e.target.value)}
-                        className="w-full px-3 py-2 border border-rose-200 rounded-lg focus:ring-2 focus:ring-rose-400 outline-none"
-                      />
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Localitate retur *</label>
-                        <input
-                          required={form.solicit_retur}
-                          value={form.localitate_retur}
-                          onChange={(e) => updateForm('localitate_retur', e.target.value)}
-                          className="w-full px-3 py-2 border border-rose-200 rounded-lg focus:ring-2 focus:ring-rose-400 outline-none"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Județ retur *</label>
-                        <input
-                          required={form.solicit_retur}
-                          value={form.judet_retur}
-                          onChange={(e) => updateForm('judet_retur', e.target.value)}
-                          className="w-full px-3 py-2 border border-rose-200 rounded-lg focus:ring-2 focus:ring-rose-400 outline-none"
-                        />
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Data retur *</label>
-                        <input
-                          type="date"
-                          required={form.solicit_retur}
-                          value={form.retur_date}
-                          onChange={(e) => updateForm('retur_date', e.target.value)}
-                          className="w-full px-3 py-2 border border-rose-200 rounded-lg focus:ring-2 focus:ring-rose-400 outline-none"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Interval orar retur</label>
-                        <input
-                          value={form.retur_interval}
-                          onChange={(e) => updateForm('retur_interval', e.target.value)}
-                          placeholder="ex: 14:00 - 16:00"
-                          className="w-full px-3 py-2 border border-rose-200 rounded-lg focus:ring-2 focus:ring-rose-400 outline-none"
-                        />
-                      </div>
-                    </div>
+                  <div className="pt-4 border-t border-rose-200">
+                    <AddressSection
+                      section="returns"
+                      blocks={returns}
+                      onChange={setReturns}
+                      errors={fieldErrors}
+                      onFieldEdited={clearFieldError}
+                    />
                   </div>
                 )}
               </div>
@@ -577,22 +482,18 @@ export default function ClientRequest() {
                       placeholder="Adaugă orice alte detalii..."
                     />
                   </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Email destinatar</label>
-                    <input
-                      type="email"
-                      value={form.recipient}
-                      onChange={(e) => updateForm('recipient', e.target.value)}
-                      className="w-full px-3 py-2 border border-rose-200 rounded-lg focus:ring-2 focus:ring-rose-400 outline-none"
-                    />
-                  </div>
+                  <p className="text-xs text-gray-500">
+                    Emailul cu comanda se trimite automat către destinatarii configurați.
+                  </p>
                 </div>
               </div>
+
+              <Banner message={error} onClose={() => setError('')} />
 
               <div className="flex gap-3 pt-2">
                 <button
                   type="button"
-                  onClick={() => setStep(1)}
+                  onClick={() => { setError(''); setStep(1); }}
                   className="flex-1 bg-white border border-rose-200 text-rose-700 font-medium py-3 rounded-xl hover:bg-rose-50 transition"
                 >
                   ← Back

@@ -1,34 +1,45 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { API_URL } from '../config';
+import { api } from '../api';
+import Banner from '../components/Banner';
+import TicketDetails from '../components/TicketDetails';
 
 export default function Warehouse() {
   const navigate = useNavigate();
   const [tickets, setTickets] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
 
+  // Admin only (RequireAdmin in App.jsx + server-side check).
   useEffect(() => {
-    if (!localStorage.getItem('isAuthenticated')) {
-      navigate('/login');
-      return;
-    }
-    if (localStorage.getItem('role') !== 'admin') {
-      navigate('/client');
-      return;
-    }
-    fetchTickets();
-  }, [navigate]);
+    let cancelled = false;
+    api('getTickets')
+      .then((data) => {
+        if (!cancelled) setTickets(data.tickets || []);
+      })
+      .catch((e) => {
+        console.error(e);
+        if (!cancelled) setError(e.message);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadKey]);
 
-  const fetchTickets = async () => {
+  const fetchTickets = () => {
     setLoading(true);
-    try {
-      const res = await fetch(`${API_URL}?action=getTickets`);
-      const data = await res.json();
-      if (data.status === 'success') setTickets(data.tickets || []);
-    } catch (e) {
-      console.error(e);
-    }
-    setLoading(false);
+    setError('');
+    setReloadKey((n) => n + 1);
+  };
+
+  const handleUpdated = (message) => {
+    setNotice(message || '');
+    fetchTickets();
   };
 
   const activeTickets = tickets.filter((t) => t.status !== 'CLOSED');
@@ -58,6 +69,9 @@ export default function Warehouse() {
           <h2 className="text-2xl font-bold text-rose-900">Active Tickets</h2>
         </div>
 
+        <Banner message={error} onClose={() => setError('')} className="mb-5" />
+        <Banner type="warning" message={notice} onClose={() => setNotice('')} className="mb-5" />
+
         {loading ? (
           <p className="text-center text-rose-600 py-20">Loading tickets...</p>
         ) : activeTickets.length === 0 ? (
@@ -67,7 +81,8 @@ export default function Warehouse() {
         ) : (
           <div className="space-y-5">
             {activeTickets.map((ticket) => (
-              <TicketCard key={ticket.ticketId} ticket={ticket} onUpdate={fetchTickets} />
+              // Keyed by status too, so the card resets its local quantities after each step.
+              <TicketCard key={`${ticket.ticketId}-${ticket.status}`} ticket={ticket} onUpdate={handleUpdated} />
             ))}
           </div>
         )}
@@ -94,34 +109,42 @@ function TicketCard({ ticket, onUpdate }) {
   const [items, setItems] = useState(ticket.items || []);
   const [comment, setComment] = useState('');
   const [processing, setProcessing] = useState(false);
+  const [error, setError] = useState(null); // { message, retry? }
   const status = ticket.status === 'CREATED' ? 'ORDERED' : ticket.status;
+
+  const setItemQty = (idx, field, value) => {
+    setItems((prev) => prev.map((item, i) => (i === idx ? { ...item, [field]: value } : item)));
+  };
 
   const sendUpdate = async (action, extra = {}) => {
     setProcessing(true);
+    setError(null);
     const payloadItems = items.map((item) => ({
       ...item,
       deliveredQty: item.deliveredQty ?? item.orderedQty ?? 0,
       returnedQty: item.returnedQty ?? item.deliveredQty ?? item.orderedQty ?? 0,
     }));
 
-    await fetch(API_URL, {
-      method: 'POST',
-      body: JSON.stringify({
-        action,
-        data: {
-          ticketId: ticket.ticketId,
-          items: payloadItems,
-          comment,
-          username: localStorage.getItem('username') || '',
-          role: localStorage.getItem('role') || '',
-          ...extra,
-        },
-      }),
-    });
-
-    setComment('');
-    onUpdate();
-    setProcessing(false);
+    try {
+      const data = await api(action, {
+        ticketId: ticket.ticketId,
+        items: payloadItems,
+        comment,
+        ...extra,
+      });
+      setComment('');
+      const warnings = data.warnings || [];
+      onUpdate(warnings.length ? `${ticket.ticketId}: ${warnings.join('\n')}` : '');
+    } catch (e) {
+      console.error(e);
+      setError({
+        message: e.message || 'Could not save. Please try again.',
+        // Items no longer in the Inventory sheet: allow an explicit override.
+        retry: e.code === 'STOCK_NOT_FOUND' ? () => sendUpdate(action, { ...extra, allowMissingStock: true }) : null,
+      });
+    } finally {
+      setProcessing(false);
+    }
   };
 
   return (
@@ -138,6 +161,8 @@ function TicketCard({ ticket, onUpdate }) {
               {status}
             </span>
           </div>
+
+          <TicketDetails info={ticket.info || {}} />
 
           <div className="overflow-x-auto mb-5 -mx-1">
             <table className="w-full text-sm text-left">
@@ -164,13 +189,11 @@ function TicketCard({ ticket, onUpdate }) {
                       <td className="py-3 px-3">
                         <input
                           type="number"
+                          min="0"
+                          max={item.orderedQty}
                           defaultValue={item.orderedQty}
                           className="w-20 px-2.5 py-1.5 border border-rose-200 rounded-lg bg-rose-50/30 text-center"
-                          onChange={(e) => {
-                            const copy = [...items];
-                            copy[idx].deliveredQty = parseInt(e.target.value) || 0;
-                            setItems(copy);
-                          }}
+                          onChange={(e) => setItemQty(idx, 'deliveredQty', parseInt(e.target.value) || 0)}
                         />
                       </td>
                     )}
@@ -178,13 +201,11 @@ function TicketCard({ ticket, onUpdate }) {
                       <td className="py-3 px-3">
                         <input
                           type="number"
+                          min="0"
+                          max={item.deliveredQty ?? item.orderedQty}
                           defaultValue={item.deliveredQty ?? item.orderedQty}
                           className="w-20 px-2.5 py-1.5 border border-rose-200 rounded-lg bg-rose-50/30 text-center"
-                          onChange={(e) => {
-                            const copy = [...items];
-                            copy[idx].returnedQty = parseInt(e.target.value) || 0;
-                            setItems(copy);
-                          }}
+                          onChange={(e) => setItemQty(idx, 'returnedQty', parseInt(e.target.value) || 0)}
                         />
                       </td>
                     )}
@@ -217,6 +238,19 @@ function TicketCard({ ticket, onUpdate }) {
             placeholder="Comment (if you cannot close / extra note)..."
             className="w-full mb-3 px-3 py-2 border border-rose-200 rounded-lg focus:ring-2 focus:ring-rose-400 outline-none text-sm"
           />
+
+          <Banner message={error?.message} onClose={() => setError(null)} className="mb-3">
+            {error?.retry && (
+              <button
+                type="button"
+                disabled={processing}
+                onClick={error.retry}
+                className="mt-2 px-3 py-1.5 rounded-lg text-xs font-semibold border border-red-300 bg-white hover:bg-red-50 disabled:opacity-50"
+              >
+                Continue anyway (don't update stock for these items)
+              </button>
+            )}
+          </Banner>
 
           <div className="flex flex-wrap gap-2">
             <button
