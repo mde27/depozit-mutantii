@@ -4,15 +4,25 @@ import { api } from '../api';
 import Banner from '../components/Banner';
 import TicketDetails from '../components/TicketDetails';
 
-export default function Warehouse() {
+// Ticket filters for the read-only view (Type A / B / C).
+const VIEW_FILTERS = [
+  { key: 'active', label: 'Active', test: (t) => t.status !== 'CLOSED' },
+  { key: 'closed', label: 'Closed', test: (t) => t.status === 'CLOSED' },
+  { key: 'all', label: 'All', test: () => true },
+];
+
+// readOnly: Type A / B / C see every ticket (status, items, details, history) but no
+// edit controls. The backend refuses updateTicket / confirmDelivery / processReturn for them anyway.
+export default function Warehouse({ readOnly = false }) {
   const navigate = useNavigate();
+  const [viewFilter, setViewFilter] = useState('active');
   const [tickets, setTickets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [reloadKey, setReloadKey] = useState(0);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
 
-  // Admin only (RequireAdmin in App.jsx + server-side check).
+  // Admin: full management. Type A / B / C: read-only (see /tickets in App.jsx).
   useEffect(() => {
     let cancelled = false;
     api('getTickets')
@@ -43,16 +53,18 @@ export default function Warehouse() {
   };
 
   const activeTickets = tickets.filter((t) => t.status !== 'CLOSED');
+  const filterDef = VIEW_FILTERS.find((f) => f.key === viewFilter) || VIEW_FILTERS[0];
+  const shownTickets = readOnly ? tickets.filter(filterDef.test) : activeTickets;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-rose-50 via-white to-rose-50">
       <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8">
         <div className="flex justify-between items-center mb-6">
           <button
-            onClick={() => navigate('/dashboard')}
+            onClick={() => navigate(readOnly ? '/client' : '/dashboard')}
             className="inline-flex items-center gap-1.5 text-rose-600 font-medium hover:text-rose-800 transition"
           >
-            <span className="text-lg">←</span> Back to Dashboard
+            <span className="text-lg">←</span> {readOnly ? 'Back to New Request' : 'Back to Dashboard'}
           </button>
           <button
             onClick={fetchTickets}
@@ -66,24 +78,59 @@ export default function Warehouse() {
           <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-rose-500 to-rose-600 flex items-center justify-center text-white shadow-md shadow-rose-200">
             🚛
           </div>
-          <h2 className="text-2xl font-bold text-rose-900">Active Tickets</h2>
+          {readOnly ? (
+            <div>
+              <h2 className="text-2xl font-bold text-rose-900">Tickets</h2>
+              <p className="text-xs text-rose-500 mt-0.5" data-testid="readonly-note">
+                View only · all tickets and their status
+              </p>
+            </div>
+          ) : (
+            <h2 className="text-2xl font-bold text-rose-900">Active Tickets</h2>
+          )}
         </div>
+
+        {readOnly && (
+          <div className="flex flex-wrap gap-2 mb-5" role="tablist" data-testid="ticket-filter">
+            {VIEW_FILTERS.map((f) => (
+              <button
+                key={f.key}
+                role="tab"
+                aria-selected={viewFilter === f.key}
+                onClick={() => setViewFilter(f.key)}
+                className={`text-sm px-3 py-1.5 rounded-lg border shadow-sm transition font-medium ${
+                  viewFilter === f.key
+                    ? 'bg-rose-600 text-white border-rose-600'
+                    : 'bg-white text-rose-700 border-rose-200 hover:bg-rose-50'
+                }`}
+              >
+                {f.label} ({tickets.filter(f.test).length})
+              </button>
+            ))}
+          </div>
+        )}
 
         <Banner message={error} onClose={() => setError('')} className="mb-5" />
         <Banner type="warning" message={notice} onClose={() => setNotice('')} className="mb-5" />
 
         {loading ? (
           <p className="text-center text-rose-600 py-20">Loading tickets...</p>
-        ) : activeTickets.length === 0 ? (
+        ) : shownTickets.length === 0 ? (
           <div className="bg-white rounded-2xl p-12 text-center shadow-sm border border-rose-100">
-            <p className="text-gray-500 font-medium">No active tickets pending.</p>
+            <p className="text-gray-500 font-medium">
+              {readOnly ? 'No tickets to show.' : 'No active tickets pending.'}
+            </p>
           </div>
         ) : (
           <div className="space-y-5">
-            {activeTickets.map((ticket) => (
-              // Keyed by status too, so the card resets its local quantities after each step.
-              <TicketCard key={`${ticket.ticketId}-${ticket.status}`} ticket={ticket} onUpdate={handleUpdated} />
-            ))}
+            {shownTickets.map((ticket) =>
+              readOnly ? (
+                <ReadOnlyTicketCard key={ticket.ticketId} ticket={ticket} />
+              ) : (
+                // Keyed by status too, so the card resets its local quantities after each step.
+                <TicketCard key={`${ticket.ticketId}-${ticket.status}`} ticket={ticket} onUpdate={handleUpdated} />
+              )
+            )}
           </div>
         )}
       </div>
@@ -215,21 +262,7 @@ function TicketCard({ ticket, onUpdate }) {
             </table>
           </div>
 
-          {(ticket.history || []).length > 0 && (
-            <div className="mb-4 space-y-2">
-              {(ticket.history || []).map((h, i) => (
-                <div key={i} className="text-xs bg-rose-50/70 border border-rose-100 rounded-lg px-3 py-2">
-                  <span className="text-gray-500">{h.at}</span>
-                  {' · '}
-                  <span className="font-medium text-rose-800">{h.user}</span>
-                  {h.from !== h.to && (
-                    <span className="text-gray-600"> · {h.from} → {h.to}</span>
-                  )}
-                  {h.comment ? <p className="text-gray-800 mt-1">{h.comment}</p> : null}
-                </div>
-              ))}
-            </div>
-          )}
+          <TicketHistory history={ticket.history} />
 
           <textarea
             rows={2}
@@ -291,6 +324,95 @@ function TicketCard({ ticket, onUpdate }) {
               </button>
             )}
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+function TicketHistory({ history }) {
+  if (!(history || []).length) return null;
+  return (
+    <div className="mb-4 space-y-2">
+      {history.map((h, i) => (
+        <div key={i} className="text-xs bg-rose-50/70 border border-rose-100 rounded-lg px-3 py-2">
+          <span className="text-gray-500">{h.at}</span>
+          {' · '}
+          <span className="font-medium text-rose-800">{h.user}</span>
+          {h.from !== h.to && (
+            <span className="text-gray-600"> · {h.from} → {h.to}</span>
+          )}
+          {h.comment ? <p className="text-gray-800 mt-1">{h.comment}</p> : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function formatCreatedAt(value) {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// View-only card for Type A / B / C: same layout as TicketCard, without inputs or buttons.
+function ReadOnlyTicketCard({ ticket }) {
+  const status = ticket.status === 'CREATED' ? 'ORDERED' : ticket.status;
+  const items = ticket.items || [];
+  const showDelivered = items.some((it) => it.deliveredQty !== undefined && it.deliveredQty !== null);
+  const showReturned = items.some((it) => it.returnedQty !== undefined && it.returnedQty !== null);
+  const created = formatCreatedAt(ticket.createdAt);
+
+  return (
+    <div
+      className="bg-white rounded-2xl shadow-md shadow-rose-100/30 border border-rose-100 overflow-hidden"
+      data-testid="readonly-ticket"
+    >
+      <div className="flex">
+        <div className={`w-1.5 shrink-0 ${barColor(status)}`} />
+        <div className="flex-1 p-5 sm:p-6">
+          <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 mb-5">
+            <div>
+              <h3 className="text-lg font-bold text-gray-800">
+                {ticket.ticketId}
+                <span className="text-gray-400 font-normal ml-2 text-base">| {ticket.client}</span>
+              </h3>
+              {created && <p className="text-xs text-gray-500 mt-0.5">Created: {created}</p>}
+            </div>
+            <span className={`self-start px-3 py-1 rounded-full text-xs font-bold border ${statusStyle(status)}`}>
+              {status}
+            </span>
+          </div>
+
+          <TicketDetails info={ticket.info || {}} />
+
+          <div className="overflow-x-auto mb-5 -mx-1">
+            <table className="w-full text-sm text-left">
+              <thead>
+                <tr className="border-b border-rose-50">
+                  <th className="py-2.5 px-3 font-semibold text-rose-800/60">Item Name</th>
+                  <th className="py-2.5 px-3 font-semibold text-rose-800/60">Ordered</th>
+                  {showDelivered && <th className="py-2.5 px-3 font-semibold text-rose-800/60">Delivered</th>}
+                  {showReturned && <th className="py-2.5 px-3 font-semibold text-rose-800/60">Returned</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((item, idx) => (
+                  <tr key={item.id || idx} className="border-b border-rose-50/60 last:border-0">
+                    <td className="py-3 px-3 font-medium text-gray-800">
+                      {item.code ? `${item.code} · ` : ''}{item.name}
+                    </td>
+                    <td className="py-3 px-3 text-gray-600">{item.orderedQty}</td>
+                    {showDelivered && <td className="py-3 px-3 text-gray-600">{item.deliveredQty ?? '—'}</td>}
+                    {showReturned && <td className="py-3 px-3 text-gray-600">{item.returnedQty ?? '—'}</td>}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <TicketHistory history={ticket.history} />
         </div>
       </div>
     </div>

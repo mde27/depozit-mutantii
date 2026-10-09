@@ -4,20 +4,24 @@ import { api } from '../api';
 import Banner from '../components/Banner';
 import SearchBar, { NoSearchResults } from '../components/SearchBar';
 import { filterStock } from '../utils/search';
+import { USER_TYPES } from '../utils/roles';
 
 // Who may see / order an item (Inventory column "visibleTo"; the server sends visibleRoles to admins).
+// Single types get their own colour; any combination (A+B, A+C, B+C, A+B+C) is emerald.
 const VISIBILITY_STYLES = {
-  'A+B': 'bg-emerald-50 text-emerald-700 border-emerald-100',
   A: 'bg-violet-50 text-violet-700 border-violet-100',
   B: 'bg-sky-50 text-sky-700 border-sky-100',
+  C: 'bg-fuchsia-50 text-fuchsia-700 border-fuchsia-100',
   'Admin only': 'bg-gray-100 text-gray-500 border-gray-200',
 };
+const COMBINED_STYLE = 'bg-emerald-50 text-emerald-700 border-emerald-100';
+const SUMMARY_COLORS = { a: 'text-violet-700', b: 'text-sky-700', c: 'text-fuchsia-700' };
 
+// "A", "B", "C", "A+B", "A+B+C", ... or "Admin only".
 function visibilityLabel(item) {
   const roles = item.visibleRoles || [];
-  const a = roles.includes('a');
-  const b = roles.includes('b');
-  return a && b ? 'A+B' : a ? 'A' : b ? 'B' : 'Admin only';
+  const types = USER_TYPES.filter((t) => roles.includes(t)).map((t) => t.toUpperCase());
+  return types.length ? types.join('+') : 'Admin only';
 }
 
 function VisibilityBadge({ item }) {
@@ -26,7 +30,7 @@ function VisibilityBadge({ item }) {
   // A filled-in cell that could not be read (e.g. a typo) is treated as admin only – highlight it.
   const unreadable = raw !== '' && label === 'Admin only';
   const title = unreadable
-    ? `Unrecognised value "${raw}" – treated as admin only. Use TypeA, TypeB or TypeA+TypeB.`
+    ? `Unrecognised value "${raw}" – treated as admin only. Use TypeA, TypeB, TypeC or combinations like TypeA+TypeC.`
     : raw
       ? `visibleTo: ${raw}`
       : 'Empty visibleTo – only admins see this item';
@@ -35,7 +39,7 @@ function VisibilityBadge({ item }) {
       title={title}
       data-testid="visible-to"
       className={`inline-flex whitespace-nowrap px-2.5 py-0.5 rounded-full text-xs font-semibold border ${
-        unreadable ? 'bg-amber-50 text-amber-700 border-amber-200' : VISIBILITY_STYLES[label]
+        unreadable ? 'bg-amber-50 text-amber-700 border-amber-200' : VISIBILITY_STYLES[label] || COMBINED_STYLE
       }`}
     >
       {unreadable ? '⚠ Admin only' : label}
@@ -83,12 +87,13 @@ export default function Stock() {
   const visibilityCounts = stock.reduce(
     (acc, item) => {
       const roles = item.visibleRoles || [];
-      if (roles.includes('a')) acc.a += 1;
-      if (roles.includes('b')) acc.b += 1;
+      USER_TYPES.forEach((t) => {
+        if (roles.includes(t)) acc[t] += 1;
+      });
       if (roles.length === 0) acc.admin += 1;
       return acc;
     },
-    { a: 0, b: 0, admin: 0 }
+    { ...Object.fromEntries(USER_TYPES.map((t) => [t, 0])), admin: 0 }
   );
 
   return (
@@ -129,8 +134,13 @@ export default function Stock() {
 
           {stock.length > 0 && (
             <p className="text-xs text-gray-500 mb-3" data-testid="visibility-summary">
-              Visible to Type A: <span className="font-semibold text-violet-700">{visibilityCounts.a}</span>
-              {' · '}Type B: <span className="font-semibold text-sky-700">{visibilityCounts.b}</span>
+              Visible to{' '}
+              {USER_TYPES.map((t, i) => (
+                <span key={t}>
+                  {i > 0 ? ' · ' : ''}Type {t.toUpperCase()}:{' '}
+                  <span className={`font-semibold ${SUMMARY_COLORS[t] || 'text-gray-700'}`}>{visibilityCounts[t]}</span>
+                </span>
+              ))}
               {' · '}Admin only: <span className="font-semibold text-gray-700">{visibilityCounts.admin}</span>
             </p>
           )}

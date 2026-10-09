@@ -42,14 +42,21 @@
  *    from the editor to force everybody to log in again.
  *
  * ITEM VISIBILITY (Inventory column "visibleTo")
- *  - Values: TypeA, TypeB or TypeA+TypeB (also "A", "B", "A/B", "a; b", ...).
- *    Type A users only see/order TypeA items, Type B users only TypeB items,
- *    admins see everything. An EMPTY cell means "admin only" – change
+ *  - Values: any combination of TypeA, TypeB, TypeC, e.g. "TypeA",
+ *    "TypeA+TypeB", "TypeC", "TypeA+TypeB+TypeC" (also "A", "C", "A/B/C",
+ *    "a; c", "type c", ...). Type A users only see/order items whose cell
+ *    includes A, Type B only B, Type C only C; admins see everything. An EMPTY cell means "admin only" – change
  *    EMPTY_VISIBLE_TO below to make empty cells visible to everyone.
  *  - The column is found by its header name. Run setupInventoryVisibility()
  *    once from the editor to add the "visibleTo" header (column J) if missing
  *    (migrateFromOldSpreadsheet() does this too). Until the column exists and
- *    is filled in, Type A / Type B users see no items.
+ *    is filled in, Type A / B / C users see no items.
+ *
+ * TICKETS
+ *  - All logged-in users (admin, Type A, B, C) can VIEW every ticket with its
+ *    status, items, addresses and history (getTickets). Only admins can change
+ *    tickets (updateTicket, confirmDelivery, processReturn); the server refuses
+ *    these for Type A / B / C.
  *
  * EMAIL RECIPIENTS
  *  - Edit ORDER_EMAIL_RECIPIENTS below to change who receives the
@@ -72,12 +79,12 @@ const TAB_HEADERS = {
 
 // Inventory column that says which user types may see / order an item (found by header name).
 const VISIBLE_TO_HEADER = "visibleTo";
-// >>> What an EMPTY visibleTo cell means. [] = admin only (hidden from Type A and Type B).
-//     Use ["a", "b"] to make items with an empty cell visible to everyone. <<<
+// >>> What an EMPTY visibleTo cell means. [] = admin only (hidden from Type A, B and C).
+//     Use ["a", "b", "c"] to make items with an empty cell visible to everyone. <<<
 const EMPTY_VISIBLE_TO = [];
 
 // >>> EDIT HERE: who receives the "New Ticket" email (comma separated list). <<<
-const ORDER_EMAIL_RECIPIENTS = ["zmanaszes1@gmail.com", "lilydark27@gmail.com"];
+const ORDER_EMAIL_RECIPIENTS = ["zmanaszes1@gmail.com", "lilydark27@gmail.com", "ibazso@yahoo.it"];
 
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;       // 12 hours
 const SESSION_PREFIX = "SESSION_";
@@ -87,7 +94,10 @@ const LOGIN_MAX_FAILURES = 5;
 const LOGIN_LOCK_SECONDS = 15 * 60;                 // 15 minutes
 const LOCK_WAIT_MS = 30000;
 const TICKET_COUNTER_KEY = "TICKET_COUNTER";
-const ROLES = ["a", "b", "admin"];
+// User roles. Every non-admin type (a, b, c) works the same way: creates tickets, sees only the
+// stock items whose visibleTo cell names it, and views all tickets read-only.
+const USER_TYPES = ["a", "b", "c"];
+const ROLES = USER_TYPES.concat(["admin"]);
 
 const STATUS = {
   ORDERED: "ORDERED",
@@ -101,7 +111,7 @@ const STATUS = {
 const ACTIONS = {
   getStock:        { admin: false, readOnly: true, fn: getStock },  // filtered by role (visibleTo)
   createTicket:    { admin: false, fn: createTicket },
-  getTickets:      { admin: true,  readOnly: true, fn: getTickets },
+  getTickets:      { admin: false, readOnly: true, fn: getTickets },  // all roles: read-only list of every ticket
   getLogs:         { admin: true,  readOnly: true, fn: getLogs },
   updateTicket:    { admin: true,  fn: updateTicket },
   confirmDelivery: { admin: true,  fn: confirmDelivery },
@@ -477,8 +487,8 @@ function findStockRow_(stockData, item) {
 }
 
 /**
- * Parses a visibleTo cell into roles: "TypeA" -> ["a"], "TypeA+TypeB" -> ["a","b"].
- * Case-insensitive, spaces ignored, separators + , ; / | & accepted, "A"/"B" shorthand.
+ * Parses a visibleTo cell into roles: "TypeA" -> ["a"], "TypeA+TypeB" -> ["a","b"], "A/B/C" -> ["a","b","c"].
+ * Case-insensitive, spaces ignored, separators + , ; / | & accepted, "A"/"B"/"C" shorthand.
  * Empty -> EMPTY_VISIBLE_TO. Unknown words are ignored (so a typo means admin only).
  */
 function parseVisibleTo_(value) {
@@ -486,7 +496,8 @@ function parseVisibleTo_(value) {
   if (!raw) return EMPTY_VISIBLE_TO.slice();
   const roles = [];
   raw.replace(/type[\s_-]+/g, "type").split(/[\s,;\/|&+]+/).forEach(token => {
-    const role = (token === "typea" || token === "a") ? "a" : (token === "typeb" || token === "b") ? "b" : "";
+    const letter = token.indexOf("type") === 0 ? token.slice(4) : token;
+    const role = USER_TYPES.indexOf(letter) !== -1 ? letter : "";
     if (role && roles.indexOf(role) === -1) roles.push(role);
   });
   return roles.sort();
@@ -521,7 +532,7 @@ function ensureVisibleToColumn_() {
   header.forEach((h, i) => { if (String(h == null ? "" : h).trim()) lastHeader = i + 1; });
   const col = lastHeader + 1;
   sheet.getRange(1, col).setValue(VISIBLE_TO_HEADER);
-  return "Inventory: added '" + VISIBLE_TO_HEADER + "' header in column " + col + ". Fill it with TypeA / TypeB / TypeA+TypeB (empty = admin only).";
+  return "Inventory: added '" + VISIBLE_TO_HEADER + "' header in column " + col + ". Fill it with TypeA / TypeB / TypeC or combinations like TypeA+TypeB+TypeC (empty = admin only).";
 }
 
 /** Run once from the Apps Script editor to add the visibleTo column header. */
@@ -716,6 +727,10 @@ function appendHistory_(sheet, rowIndex, currentStatus, user, comment, nextStatu
   sheet.getRange(rowIndex, 7).setValue(JSON.stringify(existing));
 }
 
+/**
+ * Every ticket from everyone, for all logged-in roles. Types A, B and C only get to view it:
+ * updateTicket, confirmDelivery and processReturn stay admin-only (see ACTIONS).
+ */
 function getTickets() {
   const ticketSheet = getTicketSheet_(false);
   if (!ticketSheet) return { status: "success", tickets: [] };
@@ -744,12 +759,15 @@ function nextTicketId_(ticketSheet) {
   if (lastRow >= 2) {
     const ids = ticketSheet.getRange(2, 1, lastRow - 1, 1).getValues();
     ids.forEach(r => {
-      const m = /^TICK-(\d+)$/i.exec(String(r[0]).trim());
+      // Only short ids (TICK-0001 .. TICK-999999) count; old timestamp ids like TICK-1787125189292 are ignored.
+      const m = /^TICK-(\d{1,6})$/i.exec(String(r[0]).trim());
       if (m) max = Math.max(max, parseInt(m[1], 10));
     });
   }
   const props = PropertiesService.getScriptProperties();
-  const next = Math.max(max, parseInt(props.getProperty(TICKET_COUNTER_KEY), 10) || 0) + 1;
+  let stored = parseInt(props.getProperty(TICKET_COUNTER_KEY), 10) || 0;
+  if (stored > 999999) stored = 0; // a counter polluted by an old timestamp id is reset
+  const next = Math.max(max, stored) + 1;
   props.setProperty(TICKET_COUNTER_KEY, String(next));
   return "TICK-" + String(next).padStart(4, "0");
 }
@@ -1080,7 +1098,7 @@ function createUser(data, auth) {
   }
   const pwError = validateNewPassword_(password);
   if (pwError) return fail_(pwError);
-  if (ROLES.indexOf(role) === -1) return fail_("Role must be a, b or admin.");
+  if (ROLES.indexOf(role) === -1) return fail_("Role must be a, b, c or admin.");
 
   return withLock_(() => {
     const sheet = getUsersSheet_();
@@ -1102,7 +1120,7 @@ function updateUser(data, auth, token) {
 
   if (!target) return fail_("Username is required.");
   if (!newRole && !newPassword) return fail_("Nothing to update.");
-  if (newRole && ROLES.indexOf(newRole) === -1) return fail_("Role must be a, b or admin.");
+  if (newRole && ROLES.indexOf(newRole) === -1) return fail_("Role must be a, b, c or admin.");
   if (newPassword) {
     const pwError = validateNewPassword_(newPassword);
     if (pwError) return fail_(pwError);

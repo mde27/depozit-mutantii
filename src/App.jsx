@@ -22,6 +22,14 @@ function RequireAdmin({ children }) {
   return children;
 }
 
+// /tickets: read-only ticket list for Type A / B / C. Admins use /warehouse (Management).
+function TicketsView() {
+  const { token, role } = getSession();
+  if (!token) return <Navigate to="/login" replace />;
+  if (role === 'admin') return <Navigate to="/warehouse" replace />;
+  return <Warehouse readOnly />;
+}
+
 export default function App() {
   return (
     <BrowserRouter>
@@ -31,6 +39,7 @@ export default function App() {
         <Route path="/dashboard" element={<RequireAdmin><Dashboard /></RequireAdmin>} />
         <Route path="/client" element={<RequireAuth><ClientRequest /></RequireAuth>} />
         <Route path="/warehouse" element={<RequireAdmin><Warehouse /></RequireAdmin>} />
+        <Route path="/tickets" element={<TicketsView />} />
         <Route path="/stock" element={<RequireAdmin><Stock /></RequireAdmin>} />
         <Route path="/logs" element={<RequireAdmin><Logs /></RequireAdmin>} />
         <Route path="/users" element={<RequireAdmin><Users /></RequireAdmin>} />

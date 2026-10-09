@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api, logout } from '../api';
+import { USER_TYPES } from '../utils/roles';
 import { getSession } from '../session';
 import Banner from '../components/Banner';
 import SearchBar, { NoSearchResults } from '../components/SearchBar';
@@ -226,12 +227,22 @@ export default function ClientRequest() {
               Logged in as <span className="font-bold">{username}</span> ({role.toUpperCase()})
             </div>
           )}
-          <button
-            onClick={handleLogout}
-            className="text-sm px-3 py-1.5 bg-white text-rose-700 border border-rose-200 rounded-lg hover:bg-rose-50 shadow-sm transition font-medium"
-          >
-            Logout
-          </button>
+          <div className="flex items-center gap-2">
+            {role !== 'admin' && (
+              <button
+                onClick={() => navigate('/tickets')}
+                className="text-sm px-3 py-1.5 bg-white text-rose-700 border border-rose-200 rounded-lg hover:bg-rose-50 shadow-sm transition font-medium"
+              >
+                🚛 Tickets
+              </button>
+            )}
+            <button
+              onClick={handleLogout}
+              className="text-sm px-3 py-1.5 bg-white text-rose-700 border border-rose-200 rounded-lg hover:bg-rose-50 shadow-sm transition font-medium"
+            >
+              Logout
+            </button>
+          </div>
         </div>
 
         <div className="bg-white rounded-2xl shadow-lg shadow-rose-100/40 border border-rose-100 p-6 sm:p-8">
@@ -243,7 +254,7 @@ export default function ClientRequest() {
               <h2 className="text-2xl font-bold text-rose-900">
                 {step === 1 ? 'Create New Ticket' : 'Order Details'}
               </h2>
-              {(role === 'a' || role === 'b') && step === 1 && (
+              {USER_TYPES.includes(role) && step === 1 && (
                 <p className="text-xs text-rose-500 mt-0.5" data-testid="type-note">
                   Showing items available for Type {role.toUpperCase()}
                 </p>
