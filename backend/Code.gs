@@ -58,6 +58,21 @@
  *    tickets (updateTicket, confirmDelivery, processReturn); the server refuses
  *    these for Type A / B / C.
  *
+ * TRANSPORTATOR (role "transport")
+ *  - Can only VIEW all tickets (same read-only page as Type A / B / C). The
+ *    server refuses createTicket, getStock and every admin action for it.
+ *
+ * TICKET PHOTOS
+ *  - New tickets can carry 1-5 photos (resized in the app to max 1600 px JPEG).
+ *    They are saved in the Drive folder PHOTO_FOLDER_NAME (created if missing)
+ *    and shared "anyone with the link can view"; the ticket stores their Drive
+ *    ids in Info JSON (info.photos). This uses DriveApp, so after pasting this
+ *    version Google asks once to authorize Drive access (Run any function in the
+ *    editor, or approve when deploying).
+ *
+ * TEST DATA CLEANUP
+ *  - See CLEANUP_TICKET_IDS / previewTestDataCleanup() / cleanupTestData() below.
+ *
  * EMAIL RECIPIENTS
  *  - Edit ORDER_EMAIL_RECIPIENTS below to change who receives the
  *    "New Ticket" email. The app no longer lets the browser choose this.
@@ -97,7 +112,16 @@ const TICKET_COUNTER_KEY = "TICKET_COUNTER";
 // User roles. Every non-admin type (a, b, c) works the same way: creates tickets, sees only the
 // stock items whose visibleTo cell names it, and views all tickets read-only.
 const USER_TYPES = ["a", "b", "c"];
-const ROLES = USER_TYPES.concat(["admin"]);
+// "transport" (Transportator): read-only view of all tickets only. Cannot create tickets,
+// see the stock list, edit anything, or open logs / users.
+const TRANSPORT_ROLE = "transport";
+const ROLES = USER_TYPES.concat([TRANSPORT_ROLE, "admin"]);
+
+// >>> Ticket photos: Google Drive folder (created in the script owner's Drive if missing). <<<
+const PHOTO_FOLDER_NAME = "Depozit BT - Ticket photos";
+const MAX_PHOTOS_PER_TICKET = 5;
+const MAX_PHOTO_BYTES = 2 * 1024 * 1024;            // per photo, after the app's resize/compression
+const PHOTO_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"];
 
 const STATUS = {
   ORDERED: "ORDERED",
@@ -107,10 +131,10 @@ const STATUS = {
   CLOSED: "CLOSED"
 };
 
-// action name -> { admin: true if only admins may call it, fn: handler(data, auth, token) }
+// action name -> { admin: true if only admins may call it, deny: roles refused, fn: handler(data, auth, token) }
 const ACTIONS = {
-  getStock:        { admin: false, readOnly: true, fn: getStock },  // filtered by role (visibleTo)
-  createTicket:    { admin: false, fn: createTicket },
+  getStock:        { admin: false, readOnly: true, deny: [TRANSPORT_ROLE], fn: getStock },  // filtered by role (visibleTo)
+  createTicket:    { admin: false, deny: [TRANSPORT_ROLE], fn: createTicket },
   getTickets:      { admin: false, readOnly: true, fn: getTickets },  // all roles: read-only list of every ticket
   getLogs:         { admin: true,  readOnly: true, fn: getLogs },
   updateTicket:    { admin: true,  fn: updateTicket },
@@ -154,7 +178,7 @@ function handleRequest_(request, isGet) {
 
     const auth = getSession_(request.token);
     if (!auth) return { status: "error", code: "AUTH", message: "Session expired or not logged in. Please log in again." };
-    if (def.admin && auth.role !== "admin") {
+    if ((def.admin && auth.role !== "admin") || (def.deny && def.deny.indexOf(auth.role) !== -1)) {
       return { status: "error", code: "FORBIDDEN", message: "You do not have permission for this action." };
     }
     return def.fn(request.data || {}, auth, String(request.token || ""));
@@ -783,6 +807,12 @@ function createTicket(data, auth) {
   }
   const info = checked.info;
 
+  // Optional photos (checked before anything is saved; stored in Drive after the ticket exists).
+  const photoCheck = validatePhotos_(data.photos);
+  if (photoCheck.errors.length) {
+    return fail_("Please check the photos: " + photoCheck.errors.join("; "), { code: "INVALID_PHOTOS", errors: photoCheck.errors });
+  }
+
   const clientName = (String(data.clientName || info.pm_bt || "Unknown").trim() || "Unknown").slice(0, 100);
 
   // Validate items against the inventory (by id, then code).
@@ -826,10 +856,24 @@ function createTicket(data, auth) {
     ]);
     logAction(
       auth.username, auth.role, "CREATE_TICKET",
-      "Ticket " + id + " | Client: " + clientName + " | Items: " + items.map(it => it.orderedQty + "× " + itemLabel_(it)).join(", ")
+      "Ticket " + id + " | Client: " + clientName + " | Items: " + items.map(it => it.orderedQty + "× " + itemLabel_(it)).join(", ") +
+        (photoCheck.photos.length ? " | Photos: " + photoCheck.photos.length : "")
     );
     return id;
   });
+
+  // Photos: the ticket is already saved, so a Drive problem never loses the order.
+  let photoStatus = "";
+  if (photoCheck.photos.length) {
+    try {
+      const saved = savePhotos_(photoCheck.photos, ticketId);
+      withLock_(() => setTicketPhotos_(ticketId, saved));
+      info.photos = saved;
+      photoStatus = saved.length + " photo(s) saved";
+    } catch (e) {
+      photoStatus = "ERROR saving photos: " + (e && e.message ? e.message : e);
+    }
+  }
 
   let emailStatus = "not attempted";
   try {
@@ -839,7 +883,88 @@ function createTicket(data, auth) {
     emailStatus = "ERROR: " + e.toString();
   }
 
-  return { status: "success", ticketId: ticketId, emailStatus: emailStatus };
+  const result = { status: "success", ticketId: ticketId, emailStatus: emailStatus };
+  if (photoStatus) result.photoStatus = photoStatus;
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Ticket photos (Google Drive)
+// ---------------------------------------------------------------------------
+// The app sends photos as { name, mimeType, data: base64 } (already resized to max 1600 px JPEG).
+// Each photo is saved in PHOTO_FOLDER_NAME and shared "anyone with the link can view", so the
+// app and the order email can show it (same way as the Inventory photos). Only the Drive file id
+// and name are stored in the ticket: info.photos = [{ id, name }] in the existing "Info JSON" column.
+
+/** Checks count, type and size. Returns { errors, photos: [{ name, mimeType, bytes }] }. */
+function validatePhotos_(raw) {
+  const errors = [];
+  const photos = [];
+  if (raw === undefined || raw === null || raw === "") return { errors: errors, photos: photos };
+  if (!Array.isArray(raw)) return { errors: ["invalid photo list"], photos: photos };
+  if (raw.length > MAX_PHOTOS_PER_TICKET) errors.push("at most " + MAX_PHOTOS_PER_TICKET + " photos per ticket");
+  raw.slice(0, MAX_PHOTOS_PER_TICKET).forEach((p, i) => {
+    const label = "Photo " + (i + 1);
+    if (!p || typeof p !== "object") { errors.push(label + ": invalid"); return; }
+    const mimeType = String(p.mimeType || "").toLowerCase();
+    if (PHOTO_MIME_TYPES.indexOf(mimeType) === -1) { errors.push(label + ": only JPEG, PNG or WEBP images are allowed"); return; }
+    const data = String(p.data || "").replace(/^data:[^,]*,/, "");
+    if (!data || !/^[A-Za-z0-9+/=\s]+$/.test(data)) { errors.push(label + ": no image data"); return; }
+    if (data.length > Math.ceil(MAX_PHOTO_BYTES * 4 / 3) + 4) { errors.push(label + ": too large (max " + Math.round(MAX_PHOTO_BYTES / 1048576) + " MB)"); return; }
+    let bytes;
+    try { bytes = Utilities.base64Decode(data.replace(/\s+/g, "")); } catch (e) { errors.push(label + ": no image data"); return; }
+    if (!bytes.length || bytes.length > MAX_PHOTO_BYTES) { errors.push(label + ": too large (max " + Math.round(MAX_PHOTO_BYTES / 1048576) + " MB)"); return; }
+    if (!looksLikeImage_(bytes, mimeType)) { errors.push(label + ": not a valid image"); return; }
+    const name = String(p.name || "").replace(/[^\w.\- ]+/g, "_").trim().slice(0, 80);
+    photos.push({ name: name, mimeType: mimeType, bytes: bytes });
+  });
+  return { errors: errors, photos: photos };
+}
+
+/** Magic-number check, so only real images end up in Drive. bytes are signed (-128..127). */
+function looksLikeImage_(bytes, mimeType) {
+  const b = i => (bytes[i] + 256) % 256;
+  if (mimeType === "image/jpeg") return bytes.length > 3 && b(0) === 0xFF && b(1) === 0xD8 && b(2) === 0xFF;
+  if (mimeType === "image/png") return bytes.length > 8 && b(0) === 0x89 && b(1) === 0x50 && b(2) === 0x4E && b(3) === 0x47;
+  if (mimeType === "image/webp") return bytes.length > 12 && b(0) === 0x52 && b(1) === 0x49 && b(2) === 0x46 && b(3) === 0x46 && b(8) === 0x57 && b(9) === 0x45 && b(10) === 0x42 && b(11) === 0x50;
+  return false;
+}
+
+function getPhotoFolder_() {
+  const found = DriveApp.getFoldersByName(PHOTO_FOLDER_NAME);
+  return found.hasNext() ? found.next() : DriveApp.createFolder(PHOTO_FOLDER_NAME);
+}
+
+/** Saves the photos to Drive as TICK-0042-1.jpg ... Returns [{ id, name }]. */
+function savePhotos_(photos, ticketId) {
+  const folder = getPhotoFolder_();
+  const ext = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" };
+  return photos.map((p, i) => {
+    const fileName = ticketId + "-" + (i + 1) + "." + ext[p.mimeType];
+    const file = folder.createFile(Utilities.newBlob(p.bytes, p.mimeType, fileName));
+    try {
+      file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    } catch (e) {
+      // Sharing can be blocked by a Google Workspace policy; the file is still saved.
+      Logger.log("Could not share " + fileName + ": " + e);
+    }
+    return { id: file.getId(), name: fileName };
+  });
+}
+
+/** Stores the photo list in the ticket's Info JSON (column F). Call inside the lock. */
+function setTicketPhotos_(ticketId, photos) {
+  const sheet = getTicketSheet_(false);
+  const rows = sheet.getDataRange().getValues();
+  const i = findTicketRow_(rows, ticketId);
+  if (i === -1) throw new Error("Ticket " + ticketId + " not found");
+  const info = parseJson_(rows[i][5], {});
+  info.photos = photos;
+  sheet.getRange(i + 1, 6).setValue(JSON.stringify(info));
+}
+
+function photoViewUrl_(id) {
+  return "https://drive.google.com/file/d/" + encodeURIComponent(id) + "/view";
 }
 
 function updateTicket(data, auth) {
@@ -1036,6 +1161,11 @@ function buildEmailHtml(info, items, ticketId) {
   html += addressHtml("deliveries");
   if (info.solicit_retur) html += addressHtml("returns");
   if (info.comments) html += `<p><b>Comentarii:</b> ${esc(info.comments)}</p>`;
+  const photos = Array.isArray(info.photos) ? info.photos.filter(p => p && p.id) : [];
+  if (photos.length) {
+    html += `<p><b>Poze (${photos.length}):</b> ` +
+      photos.map((p, i) => `<a href="${esc(photoViewUrl_(p.id))}">${esc(p.name || "Poza " + (i + 1))}</a>`).join(" &nbsp; ") + `</p>`;
+  }
   html += `<h3>Produse</h3>`;
   items.forEach(it => {
     html += `<div style="margin:8px 0;padding:8px;border:1px solid #fecdd3;border-radius:8px">
@@ -1098,7 +1228,7 @@ function createUser(data, auth) {
   }
   const pwError = validateNewPassword_(password);
   if (pwError) return fail_(pwError);
-  if (ROLES.indexOf(role) === -1) return fail_("Role must be a, b, c or admin.");
+  if (ROLES.indexOf(role) === -1) return fail_("Role must be a, b, c, transport or admin.");
 
   return withLock_(() => {
     const sheet = getUsersSheet_();
@@ -1120,7 +1250,7 @@ function updateUser(data, auth, token) {
 
   if (!target) return fail_("Username is required.");
   if (!newRole && !newPassword) return fail_("Nothing to update.");
-  if (newRole && ROLES.indexOf(newRole) === -1) return fail_("Role must be a, b, c or admin.");
+  if (newRole && ROLES.indexOf(newRole) === -1) return fail_("Role must be a, b, c, transport or admin.");
   if (newPassword) {
     const pwError = validateNewPassword_(newPassword);
     if (pwError) return fail_(pwError);
@@ -1175,6 +1305,104 @@ function deleteUser(data, auth) {
     revokeUserSessions_(user.username, "");
     logAction(auth.username, auth.role, "USER_DELETE", "Deleted user " + user.username + " (role " + user.role + ")");
     return { status: "success" };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// One-time cleanup of test data (run by hand from the Apps Script editor)
+// ---------------------------------------------------------------------------
+// 1. Put the exact ticket IDs in CLEANUP_TICKET_IDS (e.g. ["TICK-0020", "TICK-0021"]).
+// 2. Run previewTestDataCleanup() and read the execution log: it lists the tickets and the
+//    Logs rows that would be removed. Nothing is changed.
+// 3. Run cleanupTestData(). Every removed row is first copied to the "Cleanup archive" tab
+//    (so it can be restored by hand), then deleted from Tickets / Logs.
+// Safety: it stops without changing anything if an ID is not found or a ticket is not CLOSED.
+// Log rows are matched by the exact ticket ID ("TICK-0020" never matches "TICK-00201").
+// Stock quantities are NOT changed, and photos in Drive are kept.
+// After the cleanup, empty CLEANUP_TICKET_IDS again.
+
+const CLEANUP_TICKET_IDS = [];
+const CLEANUP_DELETE_TICKETS = true;   // false = only remove the Logs rows, keep the tickets
+const CLEANUP_ARCHIVE_TAB = "Cleanup archive";
+
+function previewTestDataCleanup() {
+  const r = cleanupTestData_(CLEANUP_TICKET_IDS, { dryRun: true, deleteTickets: CLEANUP_DELETE_TICKETS });
+  Logger.log(r.report);
+  return r;
+}
+
+function cleanupTestData() {
+  const r = cleanupTestData_(CLEANUP_TICKET_IDS, { dryRun: false, deleteTickets: CLEANUP_DELETE_TICKETS });
+  Logger.log(r.report);
+  return r;
+}
+
+function escapeRegExp_(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * ticketIds: exact ticket IDs. opts: { dryRun, deleteTickets }.
+ * Returns { status, report, tickets: [...], logRows: [...] } (row numbers are 1-based sheet rows).
+ */
+function cleanupTestData_(ticketIds, opts) {
+  opts = opts || {};
+  const ids = (Array.isArray(ticketIds) ? ticketIds : [])
+    .map(x => String(x || "").trim()).filter(Boolean)
+    .filter((v, i, a) => a.indexOf(v) === i);
+  if (!ids.length) return { status: "error", report: "CLEANUP_TICKET_IDS is empty – nothing to do.", tickets: [], logRows: [] };
+
+  return withLock_(() => {
+    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    const ticketSheet = ss.getSheetByName("Tickets");
+    const logSheet = ss.getSheetByName("Logs");
+    const tRows = ticketSheet ? ticketSheet.getDataRange().getValues() : [];
+    const lRows = logSheet ? logSheet.getDataRange().getValues() : [];
+
+    const problems = [];
+    const tickets = [];
+    ids.forEach(id => {
+      const i = findTicketRow_(tRows, id);
+      if (i === -1) { problems.push(id + ": not found in Tickets"); return; }
+      const status = normalizeStatus_(tRows[i][2]);
+      if (status !== STATUS.CLOSED) { problems.push(id + ": status is " + (status || "empty") + " (only CLOSED tickets can be cleaned up)"); return; }
+      tickets.push({ row: i + 1, ticketId: String(tRows[i][0]), client: String(tRows[i][1]), status: status, values: tRows[i] });
+    });
+
+    const patterns = ids.map(id => new RegExp("(^|[^A-Za-z0-9-])" + escapeRegExp_(id) + "(?![0-9])"));
+    const logRows = [];
+    for (let i = 1; i < lRows.length; i++) {
+      const details = String(lRows[i][4] || "");
+      const hit = ids.filter((id, k) => patterns[k].test(details));
+      if (hit.length) logRows.push({ row: i + 1, ticketId: hit[0], timestamp: String(lRows[i][0]), action: String(lRows[i][3]), details: details, values: lRows[i] });
+    }
+
+    const lines = [];
+    lines.push((opts.dryRun ? "PREVIEW (nothing changed)" : "CLEANUP") + ": " + ids.length + " ticket ID(s)");
+    tickets.forEach(t => {
+      const own = logRows.filter(l => l.ticketId === t.ticketId);
+      lines.push("  " + t.ticketId + " | " + t.client + " | " + t.status + " | Tickets row " + t.row + (opts.deleteTickets ? " (delete)" : " (keep)") + " | " + own.length + " log row(s)");
+      own.forEach(l => lines.push("      Logs row " + l.row + ": " + l.timestamp + " " + l.action + " – " + l.details.slice(0, 80)));
+    });
+    lines.push("Total: " + (opts.deleteTickets ? tickets.length : 0) + " ticket row(s), " + logRows.length + " log row(s)");
+    if (problems.length) {
+      lines.push("STOPPED – nothing was changed:");
+      problems.forEach(p => lines.push("  " + p));
+      return { status: "error", report: lines.join("\n"), problems: problems, tickets: tickets, logRows: logRows };
+    }
+    const summary = { status: "success", report: lines.join("\n"), tickets: tickets, logRows: logRows };
+    if (opts.dryRun) return summary;
+
+    // Archive first, then delete bottom-up so row numbers stay valid.
+    const archive = ss.getSheetByName(CLEANUP_ARCHIVE_TAB) || ss.insertSheet(CLEANUP_ARCHIVE_TAB);
+    if (archive.getLastRow() === 0) archive.appendRow(["Deleted at", "Tab", "Original row", "Ticket ID", "Row JSON"]);
+    const at = nowText_("yyyy-MM-dd HH:mm:ss");
+    const toArchive = (opts.deleteTickets ? tickets.map(t => ["Tickets", t]) : []).concat(logRows.map(l => ["Logs", l]));
+    toArchive.forEach(([tab, x]) => archive.appendRow([at, tab, x.row, x.ticketId, safeCell_(JSON.stringify(x.values))]));
+
+    logRows.map(l => l.row).sort((a, b) => b - a).forEach(r => logSheet.deleteRow(r));
+    if (opts.deleteTickets) tickets.map(t => t.row).sort((a, b) => b - a).forEach(r => ticketSheet.deleteRow(r));
+    return summary;
   });
 }
 

@@ -7,6 +7,7 @@ import Banner from '../components/Banner';
 import SearchBar, { NoSearchResults } from '../components/SearchBar';
 import { filterStock } from '../utils/search';
 import AddressSection from '../components/AddressSection';
+import PhotoPicker from '../components/PhotoPicker';
 import {
   ADDRESS_SECTIONS,
   blockTitle,
@@ -19,6 +20,11 @@ import {
 const NO_ITEMS_MESSAGE = 'Select at least one item.';
 const INFO_FIELD_LABELS = { pm_bt: 'Nume responsabil proiect BT', pm_bt_phone: 'Nr telefon PM BT' };
 const emptyForm = () => ({ pm_bt: '', pm_bt_phone: '', solicit_retur: false, comments: '' });
+// Item for which photos are especially useful ("Alte transporturi").
+const PHOTO_HINT_CODES = ['WH-0033'];
+const isPhotoHintItem = (item) =>
+  PHOTO_HINT_CODES.includes(String(item?.code || '').trim().toUpperCase()) ||
+  /alte\s+transporturi/i.test(String(item?.name || ''));
 
 export default function ClientRequest() {
   const navigate = useNavigate();
@@ -42,6 +48,7 @@ export default function ClientRequest() {
   const [deliveries, setDeliveries] = useState(() => [emptyBlock()]);
   const [returns, setReturns] = useState(() => [emptyBlock()]);
   const [fieldErrors, setFieldErrors] = useState({});
+  const [photos, setPhotos] = useState([]); // optional, see components/PhotoPicker.jsx
 
   // Login is required (RequireAuth in App.jsx); the server checks the session token.
   useEffect(() => {
@@ -172,10 +179,13 @@ export default function ClientRequest() {
         clientName: info.pm_bt,
         items: itemsToOrder,
         info,
+        // Only sent when photos were added, so tickets without photos are unchanged.
+        ...(photos.length ? { photos: photos.map(({ name, mimeType, data }) => ({ name, mimeType, data })) } : {}),
       });
 
       const message = 'Ticket created: ' + data.ticketId +
-        '\nEmail: ' + (data.emailStatus || 'unknown');
+        '\nEmail: ' + (data.emailStatus || 'unknown') +
+        (data.photoStatus ? '\nPhotos: ' + data.photoStatus : '');
       if (role === 'admin') {
         navigate('/dashboard', { state: { notice: message } });
       } else {
@@ -185,6 +195,7 @@ export default function ClientRequest() {
         setDeliveries([emptyBlock()]);
         setReturns([emptyBlock()]);
         setFieldErrors({});
+        setPhotos([]);
         setStep(1);
         setSuccess(message);
         window.scrollTo(0, 0);
@@ -478,6 +489,16 @@ export default function ClientRequest() {
                     />
                   </div>
                 )}
+              </div>
+
+              <div className="bg-rose-50/50 border border-rose-100 rounded-xl p-5">
+                <h3 className="text-lg font-bold text-rose-800 mb-4">📷 Poze (opțional)</h3>
+                <PhotoPicker
+                  value={photos}
+                  onChange={setPhotos}
+                  disabled={loading}
+                  highlight={stock.some((item) => selectedItems[item.id] > 0 && isPhotoHintItem(item))}
+                />
               </div>
 
               <div className="bg-rose-50/50 border border-rose-100 rounded-xl p-5">

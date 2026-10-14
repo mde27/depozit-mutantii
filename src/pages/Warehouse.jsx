@@ -3,6 +3,10 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import Banner from '../components/Banner';
 import TicketDetails from '../components/TicketDetails';
+import TicketPhotos from '../components/TicketPhotos';
+import { logout } from '../api';
+import { getSession } from '../session';
+import { TRANSPORT_ROLE, roleLabel } from '../utils/roles';
 
 // Ticket filters for the read-only view (Type A / B / C).
 const VIEW_FILTERS = [
@@ -16,6 +20,12 @@ const VIEW_FILTERS = [
 export default function Warehouse({ readOnly = false }) {
   const navigate = useNavigate();
   const [viewFilter, setViewFilter] = useState('active');
+  const { role, username } = getSession();
+  const isTransport = readOnly && role === TRANSPORT_ROLE;
+  const handleLogout = async () => {
+    await logout();
+    navigate('/login');
+  };
   const [tickets, setTickets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [reloadKey, setReloadKey] = useState(0);
@@ -60,18 +70,35 @@ export default function Warehouse({ readOnly = false }) {
     <div className="min-h-screen bg-gradient-to-br from-rose-50 via-white to-rose-50">
       <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8">
         <div className="flex justify-between items-center mb-6">
-          <button
-            onClick={() => navigate(readOnly ? '/client' : '/dashboard')}
-            className="inline-flex items-center gap-1.5 text-rose-600 font-medium hover:text-rose-800 transition"
-          >
-            <span className="text-lg">←</span> {readOnly ? 'Back to New Request' : 'Back to Dashboard'}
-          </button>
-          <button
-            onClick={fetchTickets}
-            className="text-sm px-3 py-1.5 bg-white text-rose-700 border border-rose-200 rounded-lg hover:bg-rose-50 shadow-sm transition font-medium"
-          >
-            Refresh
-          </button>
+          {isTransport ? (
+            // Transportator: this is their only page (no New Request), so show who is logged in.
+            <div className="text-sm text-rose-600 font-medium">
+              Logged in as <span className="font-bold">{username}</span> ({roleLabel(role)})
+            </div>
+          ) : (
+            <button
+              onClick={() => navigate(readOnly ? '/client' : '/dashboard')}
+              className="inline-flex items-center gap-1.5 text-rose-600 font-medium hover:text-rose-800 transition"
+            >
+              <span className="text-lg">←</span> {readOnly ? 'Back to New Request' : 'Back to Dashboard'}
+            </button>
+          )}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={fetchTickets}
+              className="text-sm px-3 py-1.5 bg-white text-rose-700 border border-rose-200 rounded-lg hover:bg-rose-50 shadow-sm transition font-medium"
+            >
+              Refresh
+            </button>
+            {isTransport && (
+              <button
+                onClick={handleLogout}
+                className="text-sm px-3 py-1.5 bg-white text-rose-700 border border-rose-200 rounded-lg hover:bg-rose-50 shadow-sm transition font-medium"
+              >
+                Logout
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="flex items-center gap-3 mb-7">
@@ -210,6 +237,7 @@ function TicketCard({ ticket, onUpdate }) {
           </div>
 
           <TicketDetails info={ticket.info || {}} />
+          <TicketPhotos photos={ticket.info?.photos} />
 
           <div className="overflow-x-auto mb-5 -mx-1">
             <table className="w-full text-sm text-left">
@@ -386,6 +414,7 @@ function ReadOnlyTicketCard({ ticket }) {
           </div>
 
           <TicketDetails info={ticket.info || {}} />
+          <TicketPhotos photos={ticket.info?.photos} />
 
           <div className="overflow-x-auto mb-5 -mx-1">
             <table className="w-full text-sm text-left">

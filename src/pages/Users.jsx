@@ -3,9 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import { getSession } from '../session';
 import Banner from '../components/Banner';
-import { USER_TYPES, roleLabel } from '../utils/roles';
+import { TRANSPORT_ROLE, USER_TYPES, roleLabel } from '../utils/roles';
 
-const ROLE_OPTIONS = [...USER_TYPES, 'admin'].map((value) => ({ value, label: roleLabel(value) }));
+const ROLE_OPTIONS = [...USER_TYPES, TRANSPORT_ROLE, 'admin'].map((value) => ({ value, label: roleLabel(value) }));
 const MIN_PASSWORD = 6;
 
 const inputClass =
@@ -16,6 +16,7 @@ function roleBadge(role) {
   if (role === 'a') return 'bg-violet-50 text-violet-700 border-violet-200';
   if (role === 'b') return 'bg-blue-50 text-blue-700 border-blue-200';
   if (role === 'c') return 'bg-fuchsia-50 text-fuchsia-700 border-fuchsia-200';
+  if (role === TRANSPORT_ROLE) return 'bg-teal-50 text-teal-700 border-teal-200';
   return 'bg-gray-50 text-gray-600 border-gray-200';
 }
 

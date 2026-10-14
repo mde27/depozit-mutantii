@@ -26,11 +26,14 @@ export default function Login() {
 
     try {
       const data = await login(username.trim(), password.trim());
-      saveSession({ token: data.token, username: data.username || username.trim(), role: data.role }); // role: "a", "b", "c" or "admin"
+      saveSession({ token: data.token, username: data.username || username.trim(), role: data.role }); // role: "a", "b", "c", "transport" or "admin"
 
       // Redirect based on role
       if (data.role === 'admin') {
         navigate('/dashboard');
+      } else if (data.role === 'transport') {
+        // Transportator only sees the read-only Tickets page
+        navigate('/tickets');
       } else {
         // Type A, B or C go directly to New Request
         navigate('/client');

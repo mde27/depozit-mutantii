@@ -7,22 +7,26 @@ import Stock from './pages/Stock';
 import Logs from './pages/Logs';
 import Users from './pages/Users';
 import { getSession } from './session';
+import { TRANSPORT_ROLE } from './utils/roles';
 
 // Route guards. They only decide what the UI shows; the backend checks the
 // session token and role on every request.
-function RequireAuth({ children }) {
-  if (!getSession().token) return <Navigate to="/login" replace />;
+// New Request (needs the stock list): every logged-in role except Transportator.
+function RequireOrderer({ children }) {
+  const { token, role } = getSession();
+  if (!token) return <Navigate to="/login" replace />;
+  if (role === TRANSPORT_ROLE) return <Navigate to="/tickets" replace />;
   return children;
 }
 
 function RequireAdmin({ children }) {
   const { token, role } = getSession();
   if (!token) return <Navigate to="/login" replace />;
-  if (role !== 'admin') return <Navigate to="/client" replace />;
+  if (role !== 'admin') return <Navigate to={role === TRANSPORT_ROLE ? '/tickets' : '/client'} replace />;
   return children;
 }
 
-// /tickets: read-only ticket list for Type A / B / C. Admins use /warehouse (Management).
+// /tickets: read-only ticket list for Type A / B / C and Transportator. Admins use /warehouse (Management).
 function TicketsView() {
   const { token, role } = getSession();
   if (!token) return <Navigate to="/login" replace />;
@@ -37,7 +41,7 @@ export default function App() {
         <Route path="/" element={<Navigate to="/login" />} />
         <Route path="/login" element={<Login />} />
         <Route path="/dashboard" element={<RequireAdmin><Dashboard /></RequireAdmin>} />
-        <Route path="/client" element={<RequireAuth><ClientRequest /></RequireAuth>} />
+        <Route path="/client" element={<RequireOrderer><ClientRequest /></RequireOrderer>} />
         <Route path="/warehouse" element={<RequireAdmin><Warehouse /></RequireAdmin>} />
         <Route path="/tickets" element={<TicketsView />} />
         <Route path="/stock" element={<RequireAdmin><Stock /></RequireAdmin>} />
