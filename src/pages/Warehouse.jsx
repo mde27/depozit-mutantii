@@ -4,6 +4,7 @@ import { api } from '../api';
 import Banner from '../components/Banner';
 import TicketDetails from '../components/TicketDetails';
 import TicketPhotos from '../components/TicketPhotos';
+import { newestFirst } from '../utils/tickets';
 import { logout } from '../api';
 import { getSession } from '../session';
 import { TRANSPORT_ROLE, roleLabel } from '../utils/roles';
@@ -37,7 +38,7 @@ export default function Warehouse({ readOnly = false }) {
     let cancelled = false;
     api('getTickets')
       .then((data) => {
-        if (!cancelled) setTickets(data.tickets || []);
+        if (!cancelled) setTickets(newestFirst(data.tickets)); // newest ticket at the top
       })
       .catch((e) => {
         console.error(e);

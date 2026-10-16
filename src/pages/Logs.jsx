@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import Banner from '../components/Banner';
+import { newestFirst } from '../utils/tickets';
 
 export default function Logs() {
   const navigate = useNavigate();
@@ -72,9 +73,7 @@ export default function Logs() {
       .includes(q);
   };
 
-  const visibleTickets = [...tickets]
-    .sort((a, b) => String(b.ticketId).localeCompare(String(a.ticketId)))
-    .filter(matchesTicket);
+  const visibleTickets = newestFirst(tickets).filter(matchesTicket);
 
   const visibleLogs = logs.filter(matchesLog);
 

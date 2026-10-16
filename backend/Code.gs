@@ -122,6 +122,8 @@ const PHOTO_FOLDER_NAME = "Depozit BT - Ticket photos";
 const MAX_PHOTOS_PER_TICKET = 5;
 const MAX_PHOTO_BYTES = 2 * 1024 * 1024;            // per photo, after the app's resize/compression
 const PHOTO_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"];
+// Photos are also attached to the order email (MailApp limit is 25 MB per message; 5 × 2 MB fits).
+const MAX_EMAIL_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 
 const STATUS = {
   ORDERED: "ORDERED",
@@ -875,10 +877,13 @@ function createTicket(data, auth) {
     }
   }
 
+  // Sent after the photos are saved (so the links exist); the photos are attached from the
+  // decoded bytes, so they are attached even if saving to Drive failed.
   let emailStatus = "not attempted";
   try {
-    sendOrderEmail(info, items, ticketId);
-    emailStatus = "sent successfully";
+    const attachments = photoAttachments_(photoCheck.photos, ticketId);
+    const sent = sendOrderEmail(info, items, ticketId, attachments);
+    emailStatus = "sent successfully" + (sent && sent.note ? " (" + sent.note + ")" : "");
   } catch (e) {
     emailStatus = "ERROR: " + e.toString();
   }
@@ -1118,20 +1123,48 @@ function processReturn(data, auth) {
 // Email
 // ---------------------------------------------------------------------------
 
-function sendOrderEmail(info, items, ticketId) {
+/** Email attachments (blobs) for the validated photos, named like the Drive files (TICK-0042-1.jpg). */
+function photoAttachments_(photos, ticketId) {
+  const ext = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" };
+  return (photos || []).map((p, i) => Utilities.newBlob(p.bytes, p.mimeType, ticketId + "-" + (i + 1) + "." + ext[p.mimeType]));
+}
+
+/**
+ * Sends the "New Ticket" email. attachments (optional) = photo blobs. If they are too large
+ * or sending with them fails, the email is sent again without attachments (the photo links
+ * stay in the body). Returns { attached: n, note } (note is "" when nothing special happened).
+ */
+function sendOrderEmail(info, items, ticketId, attachments) {
   const recipients = ORDER_EMAIL_RECIPIENTS
     .map(r => String(r || "").trim())
     .filter(Boolean)
     .filter((v, i, a) => a.indexOf(v) === i)
     .join(",");
-  if (!recipients) return;
+  if (!recipients) return { attached: 0, note: "" };
 
-  MailApp.sendEmail({
+  const message = {
     to: recipients,
     subject: ("New Ticket " + ticketId + " - " + (info.pm_bt || "Depozit BT")).replace(/[\r\n]+/g, " "),
     htmlBody: buildEmailHtml(info, items, ticketId),
     name: "Depozit BT"
-  });
+  };
+  const files = (attachments || []).filter(Boolean);
+  if (!files.length) {
+    MailApp.sendEmail(message);
+    return { attached: 0, note: "" };
+  }
+  const total = files.reduce((sum, b) => sum + b.getBytes().length, 0);
+  if (total > MAX_EMAIL_ATTACHMENT_BYTES) {
+    MailApp.sendEmail(message);
+    return { attached: 0, note: "photos too large to attach, links only" };
+  }
+  try {
+    MailApp.sendEmail(Object.assign({}, message, { attachments: files }));
+    return { attached: files.length, note: files.length + " photo(s) attached" };
+  } catch (e) {
+    MailApp.sendEmail(message);
+    return { attached: 0, note: "without attachments: " + (e && e.message ? e.message : e) };
+  }
 }
 
 function escapeHtml_(s) {
