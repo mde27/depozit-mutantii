@@ -4,6 +4,7 @@ import { api } from '../api';
 import Banner from '../components/Banner';
 import TicketDetails from '../components/TicketDetails';
 import TicketPhotos from '../components/TicketPhotos';
+import ConfirmModal from '../components/ConfirmModal';
 import { newestFirst } from '../utils/tickets';
 import { logout } from '../api';
 import { getSession } from '../session';
@@ -185,7 +186,10 @@ function TicketCard({ ticket, onUpdate }) {
   const [comment, setComment] = useState('');
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState(null); // { message, retry? }
+  const [confirmNoReturn, setConfirmNoReturn] = useState(false);
   const status = ticket.status === 'CREATED' ? 'ORDERED' : ticket.status;
+  // The order said no return is needed (old tickets without the field: no hint).
+  const noReturnRequested = ticket.info?.solicit_retur === false;
 
   const setItemQty = (idx, field, value) => {
     setItems((prev) => prev.map((item, i) => (i === idx ? { ...item, [field]: value } : item)));
@@ -352,7 +356,47 @@ function TicketCard({ ticket, onUpdate }) {
                 Process return & close
               </button>
             )}
+
+            {status === 'DELIVERED' && (
+              <button
+                disabled={processing}
+                onClick={() => setConfirmNoReturn(true)}
+                data-testid="close-no-return"
+                className={`px-4 py-2.5 rounded-xl font-semibold border bg-white disabled:opacity-50 ${
+                  noReturnRequested
+                    ? 'border-emerald-400 text-emerald-700 ring-2 ring-emerald-200 hover:bg-emerald-50'
+                    : 'border-rose-200 text-rose-700 hover:bg-rose-50'
+                }`}
+              >
+                Închide fără retur
+              </button>
+            )}
           </div>
+
+          {status === 'DELIVERED' && noReturnRequested && (
+            <p className="mt-2 text-xs text-emerald-700" data-testid="no-return-hint">Fără retur solicitat</p>
+          )}
+
+          <ConfirmModal
+            open={status === 'DELIVERED' && confirmNoReturn}
+            title="Ești sigur?"
+            confirmLabel="Da, închide fără retur"
+            busyLabel="Se închide…"
+            busy={processing}
+            testId="close-no-return-modal"
+            onCancel={() => setConfirmNoReturn(false)}
+            onConfirm={async () => {
+              await sendUpdate('closeWithoutReturn');
+              // On success the list reloads; on error close the dialog so the error banner is visible.
+              setConfirmNoReturn(false);
+            }}
+          >
+            <p>
+              Tichetul <strong className="text-gray-800">{ticket.ticketId}</strong> va fi închis fără retur.
+              Stocul nu se modifică. Acțiunea nu poate fi anulată.
+            </p>
+            {comment.trim() && <p className="text-xs text-gray-500">Comentariul scris se salvează în istoric.</p>}
+          </ConfirmModal>
         </div>
       </div>
     </div>

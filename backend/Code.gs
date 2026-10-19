@@ -55,7 +55,7 @@
  * TICKETS
  *  - All logged-in users (admin, Type A, B, C) can VIEW every ticket with its
  *    status, items, addresses and history (getTickets). Only admins can change
- *    tickets (updateTicket, confirmDelivery, processReturn); the server refuses
+ *    tickets (updateTicket, confirmDelivery, processReturn, closeWithoutReturn); the server refuses
  *    these for Type A / B / C.
  *
  * TRANSPORTATOR (role "transport")
@@ -142,6 +142,7 @@ const ACTIONS = {
   updateTicket:    { admin: true,  fn: updateTicket },
   confirmDelivery: { admin: true,  fn: confirmDelivery },
   processReturn:   { admin: true,  fn: processReturn },
+  closeWithoutReturn: { admin: true, fn: closeWithoutReturn },
   listUsers:       { admin: true,  readOnly: true, fn: listUsers },
   createUser:      { admin: true,  fn: createUser },
   updateUser:      { admin: true,  fn: updateUser },
@@ -1111,6 +1112,40 @@ function confirmDelivery(data, auth) {
 }
 
 /** DELIVERED -> CLOSED, adds returned quantities back to stock. */
+/**
+ * Closes a DELIVERED ticket WITHOUT a return: stock is not changed, every item gets
+ * returnedQty 0 (same as a return of 0), and the history says "Closed without return".
+ * Admin only. Refused for any other status (also when the ticket is already CLOSED).
+ */
+function closeWithoutReturn(data, auth) {
+  const comment = String(data.comment || "").trim();
+  return withLock_(() => {
+    const ticketSheet = getTicketSheet_(false);
+    if (!ticketSheet) return fail_("Ticket not found");
+    const rows = ticketSheet.getDataRange().getValues();
+    const i = findTicketRow_(rows, data.ticketId);
+    if (i === -1) return fail_("Ticket not found");
+
+    const ticketId = rows[i][0];
+    const current = String(rows[i][2] || "").trim();
+    if (normalizeStatus_(current) !== STATUS.DELIVERED) {
+      return fail_("Ticket " + ticketId + " is " + (current || "without status") + "; it can only be closed without return when it is " + STATUS.DELIVERED + ". Nothing was changed.", { code: "INVALID_STATE" });
+    }
+
+    const items = parseJson_(rows[i][4], []).map(item => Object.assign({}, item, { returnedQty: 0 }));
+    const note = "Closed without return" + (comment ? " – " + comment : "");
+    appendHistory_(ticketSheet, i + 1, current, auth.username, note, STATUS.CLOSED);
+    ticketSheet.getRange(i + 1, 3).setValue(STATUS.CLOSED);
+    ticketSheet.getRange(i + 1, 5).setValue(JSON.stringify(items));
+
+    logAction(
+      auth.username, auth.role, "CLOSE_NO_RETURN",
+      "Ticket " + ticketId + " | Closed without return (stock not changed)" + (comment ? " | " + comment : "")
+    );
+    return { status: "success" };
+  });
+}
+
 function processReturn(data, auth) {
   return applyStockMovement_(data, auth, {
     fromStatus: STATUS.DELIVERED, toStatus: STATUS.CLOSED,

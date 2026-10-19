@@ -81,6 +81,7 @@ export default function Logs() {
     if (action === 'CREATE_TICKET') return 'bg-rose-50 text-rose-700 border-rose-200';
     if (action === 'CONFIRM_DELIVERY') return 'bg-blue-50 text-blue-700 border-blue-200';
     if (action === 'PROCESS_RETURN') return 'bg-emerald-50 text-emerald-700 border-emerald-200';
+    if (action === 'CLOSE_NO_RETURN') return 'bg-emerald-50 text-emerald-700 border-emerald-200';
     if (String(action).startsWith('STATUS_')) return 'bg-violet-50 text-violet-700 border-violet-200';
     return 'bg-gray-50 text-gray-700 border-gray-200';
   };
