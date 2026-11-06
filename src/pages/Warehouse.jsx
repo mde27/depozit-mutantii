@@ -8,7 +8,7 @@ import ConfirmModal from '../components/ConfirmModal';
 import { newestFirst } from '../utils/tickets';
 import { logout } from '../api';
 import { getSession } from '../session';
-import { TRANSPORT_ROLE, roleLabel } from '../utils/roles';
+import { TRANSPORT_ROLE, USER_TYPES, roleLabel } from '../utils/roles';
 
 // Ticket filters for the read-only view (Type A / B / C).
 const VIEW_FILTERS = [
@@ -17,13 +17,44 @@ const VIEW_FILTERS = [
   { key: 'all', label: 'All', test: () => true },
 ];
 
-// readOnly: Type A / B / C see every ticket (status, items, details, history) but no
-// edit controls. The backend refuses updateTicket / confirmDelivery / processReturn for them anyway.
+const VIEW_MODE_KEY = 'warehouseTicketViewMode';
+
+function loadViewMode() {
+  try {
+    return localStorage.getItem(VIEW_MODE_KEY) === 'list' ? 'list' : 'cards';
+  } catch {
+    return 'cards';
+  }
+}
+
+function itemSummary(ticket) {
+  const items = ticket.items || [];
+  if (!items.length) return '—';
+  const parts = items.slice(0, 2).map((it) => `${it.orderedQty ?? '?'}× ${it.name || it.code || 'item'}`);
+  if (items.length > 2) parts.push(`+${items.length - 2}`);
+  return parts.join(', ');
+}
+
+// readOnly: Type A / B / C see every ticket; they can add a comment later, but status/qty
+// actions stay admin-only (backend enforces). Transportator stays fully read-only.
 export default function Warehouse({ readOnly = false }) {
   const navigate = useNavigate();
   const [viewFilter, setViewFilter] = useState('active');
+  const [viewMode, setViewMode] = useState(loadViewMode);
+  const [expandedId, setExpandedId] = useState(null);
   const { role, username } = getSession();
   const isTransport = readOnly && role === TRANSPORT_ROLE;
+  const canCommentLater = readOnly && USER_TYPES.includes(role);
+
+  const changeViewMode = (mode) => {
+    setViewMode(mode);
+    setExpandedId(null);
+    try {
+      localStorage.setItem(VIEW_MODE_KEY, mode);
+    } catch {
+      /* ignore */
+    }
+  };
   const handleLogout = async () => {
     await logout();
     navigate('/login');
@@ -111,7 +142,9 @@ export default function Warehouse({ readOnly = false }) {
             <div>
               <h2 className="text-2xl font-bold text-rose-900">Tickets</h2>
               <p className="text-xs text-rose-500 mt-0.5" data-testid="readonly-note">
-                View only · all tickets and their status
+                {canCommentLater
+                  ? 'Toate tichetele · poți adăuga comentarii (fără schimbare status)'
+                  : 'View only · all tickets and their status'}
               </p>
             </div>
           ) : (
@@ -119,25 +152,51 @@ export default function Warehouse({ readOnly = false }) {
           )}
         </div>
 
-        {readOnly && (
-          <div className="flex flex-wrap gap-2 mb-5" role="tablist" data-testid="ticket-filter">
-            {VIEW_FILTERS.map((f) => (
-              <button
-                key={f.key}
-                role="tab"
-                aria-selected={viewFilter === f.key}
-                onClick={() => setViewFilter(f.key)}
-                className={`text-sm px-3 py-1.5 rounded-lg border shadow-sm transition font-medium ${
-                  viewFilter === f.key
-                    ? 'bg-rose-600 text-white border-rose-600'
-                    : 'bg-white text-rose-700 border-rose-200 hover:bg-rose-50'
-                }`}
-              >
-                {f.label} ({tickets.filter(f.test).length})
-              </button>
-            ))}
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+          {readOnly ? (
+            <div className="flex flex-wrap gap-2" role="tablist" data-testid="ticket-filter">
+              {VIEW_FILTERS.map((f) => (
+                <button
+                  key={f.key}
+                  role="tab"
+                  aria-selected={viewFilter === f.key}
+                  onClick={() => setViewFilter(f.key)}
+                  className={`text-sm px-3 py-1.5 rounded-lg border shadow-sm transition font-medium ${
+                    viewFilter === f.key
+                      ? 'bg-rose-600 text-white border-rose-600'
+                      : 'bg-white text-rose-700 border-rose-200 hover:bg-rose-50'
+                  }`}
+                >
+                  {f.label} ({tickets.filter(f.test).length})
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div />
+          )}
+          <div className="inline-flex rounded-lg border border-rose-200 bg-white shadow-sm overflow-hidden" role="group" data-testid="ticket-view-toggle" aria-label="Ticket view">
+            <button
+              type="button"
+              onClick={() => changeViewMode('cards')}
+              aria-pressed={viewMode === 'cards'}
+              className={`text-sm px-3 py-1.5 font-medium transition ${
+                viewMode === 'cards' ? 'bg-rose-600 text-white' : 'text-rose-700 hover:bg-rose-50'
+              }`}
+            >
+              Cards
+            </button>
+            <button
+              type="button"
+              onClick={() => changeViewMode('list')}
+              aria-pressed={viewMode === 'list'}
+              className={`text-sm px-3 py-1.5 font-medium transition border-l border-rose-200 ${
+                viewMode === 'list' ? 'bg-rose-600 text-white' : 'text-rose-700 hover:bg-rose-50'
+              }`}
+            >
+              List
+            </button>
           </div>
-        )}
+        </div>
 
         <Banner message={error} onClose={() => setError('')} className="mb-5" />
         <Banner type="warning" message={notice} onClose={() => setNotice('')} className="mb-5" />
@@ -150,11 +209,66 @@ export default function Warehouse({ readOnly = false }) {
               {readOnly ? 'No tickets to show.' : 'No active tickets pending.'}
             </p>
           </div>
+        ) : viewMode === 'list' ? (
+          <div className="bg-white rounded-2xl border border-rose-100 shadow-sm max-h-[70vh] overflow-y-auto divide-y divide-rose-50" data-testid="ticket-list">
+            {shownTickets.map((ticket) => {
+              const status = ticket.status === 'CREATED' ? 'ORDERED' : ticket.status;
+              const open = expandedId === ticket.ticketId;
+              const created = formatCreatedAt(ticket.createdAt);
+              return (
+                <div key={ticket.ticketId} data-testid="ticket-list-row">
+                  <button
+                    type="button"
+                    onClick={() => setExpandedId(open ? null : ticket.ticketId)}
+                    className={`w-full text-left px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 hover:bg-rose-50/70 transition ${
+                      open ? 'bg-rose-50/50' : ''
+                    }`}
+                    aria-expanded={open}
+                  >
+                    <div className={`hidden sm:block w-1.5 self-stretch rounded-full shrink-0 ${barColor(status)}`} />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                        <span className="font-bold text-gray-800">{ticket.ticketId}</span>
+                        <span className="text-gray-400">|</span>
+                        <span className="text-gray-700 truncate">{ticket.client}</span>
+                        <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold border ${statusStyle(status)}`}>
+                          {status}
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-0.5 truncate">
+                        {created ? `${created} · ` : ''}
+                        {itemSummary(ticket)}
+                      </p>
+                    </div>
+                    <span className="text-rose-500 text-sm font-medium shrink-0">{open ? 'Ascunde ▲' : 'Detalii ▼'}</span>
+                  </button>
+                  {open && (
+                    <div className="px-3 pb-4 pt-1 bg-rose-50/30">
+                      {readOnly ? (
+                        <ReadOnlyTicketCard
+                          ticket={ticket}
+                          canComment={canCommentLater}
+                          onUpdate={handleUpdated}
+                        />
+                      ) : (
+                        <TicketCard key={`${ticket.ticketId}-${ticket.status}`} ticket={ticket} onUpdate={handleUpdated} />
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         ) : (
-          <div className="space-y-5">
+          <div className="space-y-5" data-testid="ticket-cards">
             {shownTickets.map((ticket) =>
               readOnly ? (
-                <ReadOnlyTicketCard key={ticket.ticketId} ticket={ticket} />
+                <ReadOnlyTicketCard
+                  key={ticket.ticketId}
+                  ticket={ticket}
+                  canComment={canCommentLater}
+                  onUpdate={handleUpdated}
+                />
               ) : (
                 // Keyed by status too, so the card resets its local quantities after each step.
                 <TicketCard key={`${ticket.ticketId}-${ticket.status}`} ticket={ticket} onUpdate={handleUpdated} />
@@ -429,13 +543,34 @@ function formatCreatedAt(value) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-// View-only card for Type A / B / C: same layout as TicketCard, without inputs or buttons.
-function ReadOnlyTicketCard({ ticket }) {
+// Read-only card for Type A / B / C / transport: same layout as TicketCard, without status/qty
+// actions. Type A / B / C can still append a comment later (canComment); transport cannot.
+function ReadOnlyTicketCard({ ticket, canComment = false, onUpdate }) {
   const status = ticket.status === 'CREATED' ? 'ORDERED' : ticket.status;
   const items = ticket.items || [];
   const showDelivered = items.some((it) => it.deliveredQty !== undefined && it.deliveredQty !== null);
   const showReturned = items.some((it) => it.returnedQty !== undefined && it.returnedQty !== null);
   const created = formatCreatedAt(ticket.createdAt);
+  const [comment, setComment] = useState('');
+  const [processing, setProcessing] = useState(false);
+  const [error, setError] = useState('');
+
+  const saveComment = async () => {
+    const text = comment.trim();
+    if (!text || processing) return;
+    setProcessing(true);
+    setError('');
+    try {
+      await api('updateTicket', { ticketId: ticket.ticketId, comment: text });
+      setComment('');
+      onUpdate?.('');
+    } catch (e) {
+      console.error(e);
+      setError(e.message || 'Nu am putut salva comentariul.');
+    } finally {
+      setProcessing(false);
+    }
+  };
 
   return (
     <div
@@ -487,6 +622,27 @@ function ReadOnlyTicketCard({ ticket }) {
           </div>
 
           <TicketHistory history={ticket.history} />
+
+          {canComment && (
+            <div className="mt-1" data-testid="readonly-comment">
+              <textarea
+                rows={2}
+                value={comment}
+                onChange={(e) => setComment(e.target.value)}
+                placeholder="Comentariu (salvare ulterioară)..."
+                className="w-full mb-3 px-3 py-2 border border-rose-200 rounded-lg focus:ring-2 focus:ring-rose-400 outline-none text-sm"
+              />
+              <Banner message={error} onClose={() => setError('')} className="mb-3" />
+              <button
+                type="button"
+                disabled={processing || !comment.trim()}
+                onClick={saveComment}
+                className="px-4 py-2.5 rounded-xl font-semibold border border-rose-200 text-rose-700 bg-white hover:bg-rose-50 disabled:opacity-50"
+              >
+                Save comment
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>

@@ -54,13 +54,14 @@
  *
  * TICKETS
  *  - All logged-in users (admin, Type A, B, C) can VIEW every ticket with its
- *    status, items, addresses and history (getTickets). Only admins can change
- *    tickets (updateTicket, confirmDelivery, processReturn, closeWithoutReturn); the server refuses
- *    these for Type A / B / C.
+ *    status, items, addresses and history (getTickets). Status changes
+ *    (updateTicket with nextStatus, confirmDelivery, processReturn,
+ *    closeWithoutReturn) stay admin-only. Type A / B / C may call updateTicket
+ *    only to append a non-empty comment (no nextStatus).
  *
  * TRANSPORTATOR (role "transport")
  *  - Can only VIEW all tickets (same read-only page as Type A / B / C). The
- *    server refuses createTicket, getStock and every admin action for it.
+ *    server refuses createTicket, getStock, comments and every admin action.
  *
  * TICKET PHOTOS
  *  - New tickets can carry 1-5 photos (resized in the app to max 1600 px JPEG).
@@ -139,7 +140,7 @@ const ACTIONS = {
   createTicket:    { admin: false, deny: [TRANSPORT_ROLE], fn: createTicket },
   getTickets:      { admin: false, readOnly: true, fn: getTickets },  // all roles: read-only list of every ticket
   getLogs:         { admin: true,  readOnly: true, fn: getLogs },
-  updateTicket:    { admin: true,  fn: updateTicket },
+  updateTicket:    { admin: false, deny: [TRANSPORT_ROLE], fn: updateTicket },  // comment-only for a/b/c; status change checked in fn
   confirmDelivery: { admin: true,  fn: confirmDelivery },
   processReturn:   { admin: true,  fn: processReturn },
   closeWithoutReturn: { admin: true, fn: closeWithoutReturn },
@@ -756,7 +757,7 @@ function appendHistory_(sheet, rowIndex, currentStatus, user, comment, nextStatu
 
 /**
  * Every ticket from everyone, for all logged-in roles. Types A, B and C only get to view it:
- * updateTicket, confirmDelivery and processReturn stay admin-only (see ACTIONS).
+ * confirmDelivery / processReturn / closeWithoutReturn stay admin-only; updateTicket allows comment-only for a/b/c.
  */
 function getTickets() {
   const ticketSheet = getTicketSheet_(false);
@@ -976,6 +977,13 @@ function photoViewUrl_(id) {
 function updateTicket(data, auth) {
   const comment = String(data.comment || "").trim();
   const nextStatus = data.nextStatus ? String(data.nextStatus).trim().toUpperCase() : "";
+  // Type A / B / C: comment-only. Status transitions stay admin-only. Transport is denied in ACTIONS.
+  if (auth.role !== "admin") {
+    if (nextStatus) {
+      return { status: "error", code: "FORBIDDEN", message: "You do not have permission for this action." };
+    }
+    if (!comment) return fail_("Nothing to update: add a comment.");
+  }
   if (!nextStatus && !comment) return fail_("Nothing to update: add a comment.");
   if (nextStatus && nextStatus !== STATUS.PICKED_UP) {
     return fail_("Status " + nextStatus + " cannot be set here.", { code: "INVALID_STATE" });
